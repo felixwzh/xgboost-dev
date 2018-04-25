@@ -76,7 +76,7 @@ export JAVAINCFLAGS = -I${JAVA_HOME}/include -I./java
 ifeq ($(TEST_COVER), 1)
 	CFLAGS += -g -O0 -fprofile-arcs -ftest-coverage
 else
-	CFLAGS += -O3 -funroll-loops
+	CFLAGS += -O0 -g -gdwarf-3 -funroll-loops
 ifeq ($(USE_SSE), 1)
 	CFLAGS += -msse2
 endif
@@ -158,7 +158,7 @@ lib/libxgboost_all.so: $(AMALGA_OBJ) $(LIB_DEP)
 
 lib/libxgboost.a: $(ALL_DEP)
 	@mkdir -p $(@D)
-	ar crv $@ $(filter %.o, $?)
+	ar crvss $@ $(filter %.o, $?)
 
 lib/xgboost.dll lib/libxgboost.so lib/libxgboost.dylib: $(ALL_DEP)
 	@mkdir -p $(@D)

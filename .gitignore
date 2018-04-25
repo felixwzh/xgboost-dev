@@ -94,3 +94,9 @@ lib/
 metastore_db
 
 plugin/updater_gpu/test/cpp/data
+
+cmake-build-debug/
+
+demo/ruijin/
+
+demo/

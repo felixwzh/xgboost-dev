@@ -13,6 +13,7 @@
 #include "../common/random.h"
 #include "../common/bitmap.h"
 #include "../common/sync.h"
+#include <iostream>
 
 namespace xgboost {
 namespace tree {
@@ -34,7 +35,7 @@ class ColMaker: public TreeUpdater {
     // rescale learning rate according to size of trees
     float lr = param_.learning_rate;
     param_.learning_rate = lr / trees.size();
-    TConstraint::Init(&param_, dmat->Info().num_col_);
+    TConstraint::Init(&param_, dmat->Info().num_col_);    
     // build tree
     for (auto tree : trees) {
       Builder builder(param_);
@@ -607,7 +608,7 @@ class ColMaker: public TreeUpdater {
                                 const DMatrix& fmat) {
       const MetaInfo& info = fmat.Info();
       // start enumeration
-      const auto nsize = static_cast<bst_omp_uint>(batch.size);
+      const auto nsize = static_cast<bst_omp_uint>(batch.size);   // nsize is the number of features, this means feature level parallel
       #if defined(_OPENMP)
       const int batch_size = std::max(static_cast<int>(nsize / this->nthread_ / 32), 1);
       #endif
@@ -618,6 +619,10 @@ class ColMaker: public TreeUpdater {
       if (poption == 0) {
         #pragma omp parallel for schedule(dynamic, batch_size)
         for (bst_omp_uint i = 0; i < nsize; ++i) {
+
+          // i is the i-th feature
+          // c is the i-th feature data (col)
+
           const bst_uint fid = batch.col_index[i];
           const int tid = omp_get_thread_num();
           const ColBatch::Inst c = batch[i];
@@ -638,6 +643,8 @@ class ColMaker: public TreeUpdater {
         }
       }
     }
+
+    
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
                           const std::vector<int> &qexpand,
@@ -655,12 +662,118 @@ class ColMaker: public TreeUpdater {
       }
       dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set);
       while (iter->Next()) {
-        this->UpdateSolution(iter->Value(), gpair, *p_fmat);
+        this->UpdateSolution(iter->Value(), gpair, *p_fmat); //because it's level wise training
       }
       // after this each thread's stemp will get the best candidates, aggregate results
       this->SyncBestSolution(qexpand);
       // get the best result, we can synchronize the solution
-      for (int nid : qexpand) {
+
+        // TODO FLAG
+        //=====================  begin of task split =======================
+        // todo: add task list, a int array can do
+        /* Todo
+        *  1. learn CSR format, and many other data structure.
+        * 
+        */
+
+        // steps: for each nid, we use should do the following things
+        /* 1. calculate task_gain_all, task_gain_self, w*,
+         * 2. partition the samples under some rule
+         * 3. calculate the gain of left and right child if they conduct a normal feature split
+         * 4. compare the 1-4 gain of all the task split and make a decision, do task or not.
+         * 5. make a node, we need to modify the node data structure, add a flag `is_task_split_node`
+         *    we also have to update several predicting functions that uses the tree structure.
+         *
+         * */
+        
+        for (int nid : qexpand) {
+          //  NodeEntry &e = snode_[nid];
+           std::cout<<nid<<" th node here \n\n"<<'\n';
+           dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set); // how to get the data just at this node? 
+
+           int ins_in_bacth_list[100]={0};
+           int bacth_iter_cnt=0;
+           int ins_num_in_batch=0;
+           int task_cnt_list[30]={0};
+
+
+           while (iter->Next()) {
+            auto batch = iter->Value();
+            const auto nsize = static_cast<bst_omp_uint>(batch.size);
+
+            bst_omp_uint task_i;
+            for (bst_omp_uint i = 0; i < nsize; ++i) {
+            const bst_uint fid = batch.col_index[i];  // should check the feature idx, i is not the idx.
+            if (fid==0){
+              task_i = i; // find the task idx task_i
+              break;
+              }
+            }  
+            
+            ins_num_in_batch=0;
+            // get the task data.
+            const ColBatch::Inst task_c = batch[task_i];
+            // check the data
+            for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
+              const bst_uint ridx = it->index;
+              const int nid = position_[ridx];
+              const bst_float fvalue = it->fvalue;
+              int task_value=int(fvalue);
+              task_cnt_list[task_value]++;
+
+              ins_num_in_batch++;
+            }
+          bacth_iter_cnt++;
+          }
+          if (bacth_iter_cnt<100){
+            ins_in_bacth_list[bacth_iter_cnt]=ins_num_in_batch;
+            std::cout<<ins_num_in_batch<<'\n';
+          }
+          
+
+
+          //   struct Entry {
+          //   /*! \brief feature index */
+          //   bst_uint index;
+          //   /*! \brief feature value */
+          //   bst_float fvalue;
+          //   /*! \brief default constructor */
+          //   Entry() = default;
+          //   /*!
+          //    * \brief constructor with index and value
+          //    * \param index The feature or row index.
+          //    * \param fvalue THe feature value.
+          //    */
+          //   Entry(bst_uint index, bst_float fvalue) : index(index), fvalue(fvalue) {}
+          //   /*! \brief reversely compare feature values */
+          //   inline static bool CmpValue(const Entry& a, const Entry& b) {
+          //     return a.fvalue < b.fvalue;
+          //   }
+          // };
+
+          //   /*! \brief an instance of sparse vector in the batch */
+          //   struct Inst {
+          //   /*! \brief pointer to the elements*/
+          //   const Entry *data{nullptr};
+          //   /*! \brief length of the instance */
+          //   bst_uint length{0};
+          //   /*! \brief constructor */
+          //   Inst()  = default;
+          //   Inst(const Entry *data, bst_uint length) : data(data), length(length) {}
+          //   /*! \brief get i-th pair in the sparse vector*/
+          //   inline const Entry& operator[](size_t i) const {
+          //     return data[i];
+          //   }
+          // };
+
+
+
+        }
+
+
+        //=====================  end   of task split =======================
+
+        for (int nid : qexpand) {
         NodeEntry &e = snode_[nid];
         // now we know the solution in snode[nid], set split
         if (e.best.loss_chg > kRtEps) {

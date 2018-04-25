@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "thread": "cpp",
+        "*.cuh": "cpp",
+        "array": "cpp",
+        "functional": "cpp",
+        "cmath": "cpp",
+        "cstdlib": "cpp"
+    }
+}

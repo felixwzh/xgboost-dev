@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "gdb",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/home/fw/code/xgboost/xgboost",
+            "args": ["/home/fw/code/xgboost/demo/ruijin/mushroom.conf"],
+            "stopAtEntry": false,
+            "cwd": "/home/fw/code/xgboost",
+            "environment": [],
+            "externalConsole": true,
+            "preLaunchTask": "make",
+            "MIMode": "gdb"
+        }
+    ]
+}

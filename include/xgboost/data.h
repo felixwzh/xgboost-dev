@@ -248,6 +248,10 @@ class RowSet {
  *  - Provide a DataSource, that can be passed to DMatrix::Create
  *      This can be used to re-use inmemory data structure into DMatrix.
  */
+
+
+// TODO (felix) read the func and param here
+// fixme: what is a ColIterator?
 class DMatrix {
  public:
   /*! \brief default constructor */
@@ -271,7 +275,9 @@ class DMatrix {
   virtual dmlc::DataIter<ColBatch>* ColIterator(const std::vector<bst_uint>& fset) = 0;
   /*!
    * \brief check if column access is supported, if not, initialize column access.
-   * \param enabled whether certain feature should be included in column access.
+   * \param enabled whether certain feature should be included in column access.    
+   * // fixme: this is a param which is helpful for us
+   * 
    * \param subsample subsample ratio when generating column access.
    * \param max_row_perbatch auxiliary information, maximum row used in each column batch.
    *         this is a hint information that can be ignored by the implementation.
