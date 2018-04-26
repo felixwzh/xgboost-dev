@@ -197,7 +197,7 @@ class ColMaker: public TreeUpdater {
         for (size_t i = 0; i < stemp_.size(); ++i) {
           stemp_[i].resize(tree.param.num_nodes, ThreadEntry(param_));
         }
-        snode_.resize(tree.param.num_nodes, NodeEntry(param_));
+        snode_.resize(tree.param.num_nodes, NodeEntry(param_)); // FIXME: learn this, 
         constraints_.resize(tree.param.num_nodes);
       }
       const RowSet &rowset = fmat.BufferedRowset();
@@ -527,6 +527,7 @@ class ColMaker: public TreeUpdater {
                                const std::vector<GradientPair> &gpair,
                                const MetaInfo &info,
                                std::vector<ThreadEntry> &temp) { // NOLINT(*)
+                               // TODO:  what is ThreadEntry? this is a node?
       // use cacheline aware optimization
       if (TStats::kSimpleStats != 0 && param_.cache_opt != 0) {
         EnumerateSplitCacheOpt(begin, end, d_step, fid, gpair, temp);
@@ -541,28 +542,28 @@ class ColMaker: public TreeUpdater {
       TStats c(param_);
       for (const ColBatch::Entry *it = begin; it != end; it += d_step) {
         const bst_uint ridx = it->index;
-        const int nid = position_[ridx];
+        const int nid = position_[ridx];   // FIXME: this is the one that store which the data belongs to!
         if (nid < 0) continue;
         // start working
         const bst_float fvalue = it->fvalue;
         // get the statistics of nid
-        ThreadEntry &e = temp[nid];
+        ThreadEntry &e = temp[nid];    // TODO:  this one is important
         // test if first hit, this is fine, because we set 0 during init
-        if (e.stats.Empty()) {
-          e.stats.Add(gpair, info, ridx);
-          e.last_fvalue = fvalue;
+        if (e.stats.Empty()) { 
+          e.stats.Add(gpair, info, ridx);  // TODO: fixme:  important function   
+          e.last_fvalue = fvalue;   // TODO: important function 
         } else {
           // try to find a split
           if (fvalue != e.last_fvalue &&
               e.stats.sum_hess >= param_.min_child_weight) {
-            c.SetSubstract(snode_[nid].stats, e.stats);
+            c.SetSubstract(snode_[nid].stats, e.stats); // TODO: important function
             if (c.sum_hess >= param_.min_child_weight) {
               bst_float loss_chg;
               if (d_step == -1) {
                 loss_chg = static_cast<bst_float>(
-                    constraints_[nid].CalcSplitGain(
+                    constraints_[nid].CalcSplitGain( // TODO: important function
                         param_, param_.monotone_constraints[fid], c, e.stats) -
-                    snode_[nid].root_gain);
+                    snode_[nid].root_gain); // TODO: important function, we can use snode_[nid].root_gain
               } else {
                 loss_chg = static_cast<bst_float>(
                     constraints_[nid].CalcSplitGain(
@@ -644,6 +645,123 @@ class ColMaker: public TreeUpdater {
       }
     }
 
+
+
+
+    inline void AssignTaskAndNid(RegTree *tree,
+                                DMatrix *p_fmat,
+                                std::vector<bst_uint> feat_set,
+                                const std::vector<int> &qexpand,
+                                const int num_node_){
+
+      std::vector<unsigned> nid_split_index;
+      nid_split_index.resize(num_node_,0);
+      std::vector<float> nid_split_cond;
+      nid_split_cond.resize(num_node_,0);
+
+      std::vector<unsigned> fsplits;
+      for (int nid : qexpand) {
+        NodeEntry &e = snode_[nid];
+        fsplits.push_back(e.best.SplitIndex());
+        nid_split_index.at(nid)=e.best.SplitIndex();
+        nid_split_cond.at(nid)=e.best.split_value;
+      }  
+      std::sort(fsplits.begin(), fsplits.end());
+      fsplits.resize(std::unique(fsplits.begin(), fsplits.end()) - fsplits.begin());
+      // std::cout<<"1"<<'\n';
+
+      dmlc::DataIter<ColBatch> *iter_task = p_fmat->ColIterator(fsplits);
+      while (iter_task->Next()) {  
+        const ColBatch &batch = iter_task->Value();
+        for (size_t i = 0; i < batch.size; ++i) {
+          ColBatch::Inst col = batch[i];
+          const bst_uint fid = batch.col_index[i];
+          const auto ndata = static_cast<bst_omp_uint>(col.length);
+          #pragma omp parallel for schedule(static)
+          for (bst_omp_uint j = 0; j < ndata; ++j) {
+            const bst_uint ridx = col[j].index;
+            const int nid = position_[ridx];
+            std::cout<<nid<<'\t';      
+            inst_nid_.at(ridx)=nid;
+            const bst_float fvalue = col[j].fvalue;
+            if (nid_split_index.at(nid) == fid) {
+              if (fvalue < nid_split_cond.at(nid)) {
+                inst_go_left_.at(ridx)=true;
+              } else {
+                inst_go_left_.at(ridx)=false;
+              }
+            }
+          }
+        }
+      }
+      std::cout<<"2"<<'\n';
+
+      iter_task = p_fmat->ColIterator(feat_set);
+      while (iter_task->Next()) {
+          auto batch = iter_task->Value();
+          const auto nsize = static_cast<bst_omp_uint>(batch.size);
+          bst_omp_uint task_i;
+          for (bst_omp_uint i = 0; i < nsize; ++i) {
+          const bst_uint fid = batch.col_index[i];  // should check the feature idx, i is not the idx.
+          if (fid==0){
+            task_i = i; // find the task idx task_i
+            break;
+            }
+          }  
+          const ColBatch::Inst task_c = batch[task_i];
+          for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
+            const bst_uint ridx = it->index;
+            const bst_float fvalue = it->fvalue;
+            int task_value=int(fvalue);
+
+            // const int nid = position_[ridx];
+            // inst_nid_.at(ridx)=nid;
+            inst_task_id_.at(ridx)=task_value;
+          }
+        }
+    }
+
+    inline void InitAuxiliary(const uint64_t num_row_, const int num_node_,const std::vector<int> &qexpand){
+      /****************************** init auxiliary val ***********************************/
+      // they can be init at the begining of each depth before the real task split
+
+      // the nid of each inst
+      // data_in
+      inst_nid_.resize(num_row_,-1);
+      // the task_id of each isnt
+      inst_task_id_.resize(num_row_,-1);
+      // whether the inst goes left (true) or right (false)
+      inst_go_left_.resize(num_row_,true);
+
+      // G and H in capital means the sum of the G and H over all the instances
+      // store the G and H in the node, in order to calculate w* for the whole node 
+      // auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));
+      // std::cout<<*biggest<<"\t\n";
+      G_node_.resize(num_node_);
+      H_node_.resize(num_node_);
+      for (int nid : qexpand) {
+        G_node_.at(nid)=0;
+        H_node_.at(nid)=0;
+      }
+      // store the G and H for each task in each node's left and right child, the 
+      G_task_lnode_.resize(num_node_);
+      G_task_rnode_.resize(num_node_);
+      H_task_lnode_.resize(num_node_);
+      H_task_rnode_.resize(num_node_);
+      for (int nid : qexpand) {
+        G_task_lnode_.at(nid).resize(task_num_for_init_vec,-1);
+        G_task_rnode_.at(nid).resize(task_num_for_init_vec,-1);
+        H_task_lnode_.at(nid).resize(task_num_for_init_vec,-1);
+        H_task_rnode_.at(nid).resize(task_num_for_init_vec,-1);
+        for (int task_id : tasks_list_){
+          G_task_lnode_.at(nid).at(task_id)=0;
+          G_task_rnode_.at(nid).at(task_id)=0;
+          H_task_lnode_.at(nid).at(task_id)=0;
+          H_task_rnode_.at(nid).at(task_id)=0;
+        }  
+      }
+
+    }
     
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
@@ -668,110 +786,137 @@ class ColMaker: public TreeUpdater {
       this->SyncBestSolution(qexpand);
       // get the best result, we can synchronize the solution
 
-        // TODO FLAG
-        //=====================  begin of task split =======================
-        // todo: add task list, a int array can do
-        /* Todo
-        *  1. learn CSR format, and many other data structure.
-        * 
-        */
 
-        // steps: for each nid, we use should do the following things
-        /* 1. calculate task_gain_all, task_gain_self, w*,
-         * 2. partition the samples under some rule
-         * 3. calculate the gain of left and right child if they conduct a normal feature split
-         * 4. compare the 1-4 gain of all the task split and make a decision, do task or not.
-         * 5. make a node, we need to modify the node data structure, add a flag `is_task_split_node`
-         *    we also have to update several predicting functions that uses the tree structure.
-         *
-         * */
+
+      //=====================  begin of task split =======================
+
+      /* 1. calculate task_gain_all, task_gain_self, w*,
+        * 2. partition the samples under some rule
+        * 3. calculate the gain of left and right child if they conduct a normal feature split
+        * 4. compare the 1-4 gain of all the task split and make a decision, do task or not.
+        * 5. make a node, we need to modify the node data structure, add a flag `is_task_split_node`
+        *    we also have to update several predicting functions that uses the tree structure.
+        *
+        * */
+      int node_isn_num[100];
+
+      /****************************** init auxiliary val ***********************************/
+      auto num_row=p_fmat->Info().num_row_;
+      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));
+      int num_node = (*biggest+1);
+      InitAuxiliary(num_row,num_node,qexpand_);
+      // std::cout<<"init aux"<<'\n';
+
+      // /******************  assign nid,  task_id,  go_left  for each inst *******************/
+      AssignTaskAndNid(p_tree,p_fmat,feat_set,qexpand_,num_node);
+      // for (int ind : inst_nid_){std::cout<<ind<<"\t";}
+      // for (int ind : inst_task_id_){std::cout<<ind<<"\t";}
+      // for (int ind : inst_go_left_){std::cout<<ind<<"\t";}
+      // std::cout<<"assign"<<'\n';
+      
+
+
+      /************* starts of calculate G, H through the whole data*******/
+      // step 0, resize the G,H,for node and task here following this :
+      /*
+      snode_.resize(tree.param.num_nodes, NodeEntry(param_)); // FIXME: learn this, 
+      constraints_.resize(tree.param.num_nodes);
+      */
+
+
+
+      
+
+
+
+      /************* end    of calculate G, H through the whole data*******/
+      
+
+
+
+
+
+
+      // for (int nid : qexpand) {
+
         
-        for (int nid : qexpand) {
-          //  NodeEntry &e = snode_[nid];
-           std::cout<<nid<<" th node here \n\n"<<'\n';
-           dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set); // how to get the data just at this node? 
-
-           int ins_in_bacth_list[100]={0};
-           int bacth_iter_cnt=0;
-           int ins_num_in_batch=0;
-           int task_cnt_list[30]={0};
 
 
-           while (iter->Next()) {
-            auto batch = iter->Value();
-            const auto nsize = static_cast<bst_omp_uint>(batch.size);
 
-            bst_omp_uint task_i;
-            for (bst_omp_uint i = 0; i < nsize; ++i) {
-            const bst_uint fid = batch.col_index[i];  // should check the feature idx, i is not the idx.
-            if (fid==0){
-              task_i = i; // find the task idx task_i
-              break;
-              }
-            }  
-            
-            ins_num_in_batch=0;
-            // get the task data.
-            const ColBatch::Inst task_c = batch[task_i];
-            // check the data
-            for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
-              const bst_uint ridx = it->index;
-              const int nid = position_[ridx];
-              const bst_float fvalue = it->fvalue;
-              int task_value=int(fvalue);
-              task_cnt_list[task_value]++;
+      //   //  NodeEntry &e = snode_[nid];
+      //   NodeEntry &e = snode_[nid];
+      //   auto best_feature_split_fidx = e.best.SplitIndex();
+      //   auto best_feature_split_value = e.best.split_value;
 
-              ins_num_in_batch++;
-            }
-          bacth_iter_cnt++;
-          }
-          if (bacth_iter_cnt<100){
-            ins_in_bacth_list[bacth_iter_cnt]=ins_num_in_batch;
-            std::cout<<ins_num_in_batch<<'\n';
-          }
+
+
+      //   std::cout<<nid<<" th node here \n\n"<<'\n';
+      //   dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set); // how to get the data just at this node? 
+
+      //   int ins_in_bacth_list[100]={0};
+      //   int bacth_iter_cnt=0;
+      //   int ins_num_in_batch=0;
+      //   int task_cnt_list[30]={0};
+      //   int task_G_list[30]={0};
+      //   int task_H_list[30]={0};
+        
+
+      //   // define the G_L_task,H_L_task,G_R_task,h_R_task, G_task, H_task for further computing.
+      //   float G_L_task=0,H_L_task=0,G_R_task=0,h_R_task=0,G_task=0,H_task=0;           
+        
+      //   while (iter->Next()) {
+      //     auto batch = iter->Value();
+      //     const auto nsize = static_cast<bst_omp_uint>(batch.size);
+      //     bst_omp_uint task_i;
+      //     for (bst_omp_uint i = 0; i < nsize; ++i) {
+      //     const bst_uint fid = batch.col_index[i];  // should check the feature idx, i is not the idx.
+      //     if (fid==0){
+      //       task_i = i; // find the task idx task_i
+      //       break;
+      //       }
+      //     }  
           
+      //     ins_num_in_batch=0;
+      //     // get the task data.
+      //     const ColBatch::Inst task_c = batch[task_i];
+
+      //     // check the data
+      //     for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
+            
+      //       const bst_uint ridx = it->index;
 
 
-          //   struct Entry {
-          //   /*! \brief feature index */
-          //   bst_uint index;
-          //   /*! \brief feature value */
-          //   bst_float fvalue;
-          //   /*! \brief default constructor */
-          //   Entry() = default;
-          //   /*!
-          //    * \brief constructor with index and value
-          //    * \param index The feature or row index.
-          //    * \param fvalue THe feature value.
-          //    */
-          //   Entry(bst_uint index, bst_float fvalue) : index(index), fvalue(fvalue) {}
-          //   /*! \brief reversely compare feature values */
-          //   inline static bool CmpValue(const Entry& a, const Entry& b) {
-          //     return a.fvalue < b.fvalue;
-          //   }
-          // };
+      //       const int ins_nid=position_[ridx];
+      //       if (nid==ins_nid){ // make sure that the ins belongs to the corrent processing node with nid. FIXME, could be parallel LATER
+      //         // const int nid = position_[ridx];
+      //         const bst_float fvalue = it->fvalue;
+      //         int task_value=int(fvalue);
+      //         task_cnt_list[task_value]++;
 
-          //   /*! \brief an instance of sparse vector in the batch */
-          //   struct Inst {
-          //   /*! \brief pointer to the elements*/
-          //   const Entry *data{nullptr};
-          //   /*! \brief length of the instance */
-          //   bst_uint length{0};
-          //   /*! \brief constructor */
-          //   Inst()  = default;
-          //   Inst(const Entry *data, bst_uint length) : data(data), length(length) {}
-          //   /*! \brief get i-th pair in the sparse vector*/
-          //   inline const Entry& operator[](size_t i) const {
-          //     return data[i];
-          //   }
-          // };
+      //         ins_num_in_batch++;
+              
+      //         // get the gradient here
+      //         const GradientPair& b = gpair[ridx];
+      //         G_task+=b.GetGrad();
+      //         task_G_list[task_value]+=b.GetGrad();
+              
+      //         H_task+=b.GetHess();
+      //         task_H_list[task_value]+=b.GetHess();
+
+      //       }
+      //     }
+      //   bacth_iter_cnt++;
+      //   }
+      //   if (bacth_iter_cnt<100){
+      //     ins_in_bacth_list[bacth_iter_cnt]=ins_num_in_batch;
+      //     std::cout<<ins_num_in_batch<<'\n';
+          
+      //   }
+        
+      // }
 
 
-
-        }
-
-
-        //=====================  end   of task split =======================
+      //=====================  end   of task split =======================
 
         for (int nid : qexpand) {
         NodeEntry &e = snode_[nid];
@@ -833,7 +978,7 @@ class ColMaker: public TreeUpdater {
     }
     virtual void SetNonDefaultPosition(const std::vector<int> &qexpand,
                                        DMatrix *p_fmat,
-                                       const RegTree &tree) {
+                                       const RegTree &tree) { 
       // step 1, classify the non-default data into right places
       std::vector<unsigned> fsplits;
       for (int nid : qexpand) {
@@ -844,7 +989,7 @@ class ColMaker: public TreeUpdater {
       std::sort(fsplits.begin(), fsplits.end());
       fsplits.resize(std::unique(fsplits.begin(), fsplits.end()) - fsplits.begin());
       dmlc::DataIter<ColBatch> *iter = p_fmat->ColIterator(fsplits);
-      while (iter->Next()) {
+      while (iter->Next()) {  //TODO: learn the code here!
         const ColBatch &batch = iter->Value();
         for (size_t i = 0; i < batch.size; ++i) {
           ColBatch::Inst col = batch[i];
@@ -897,6 +1042,39 @@ class ColMaker: public TreeUpdater {
     std::vector<int> qexpand_;
     // constraint value
     std::vector<TConstraint> constraints_;
+
+
+    /****************************** auxiliary val ***********************************/
+    // they can be init at the begining of each depth before the real task split
+
+    // 
+    const std::vector<int> tasks_list_{1, 2, 4, 5, 6, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
+    const int task_num_for_init_vec=30;
+
+    // the nid of each inst
+    std::vector<int> inst_nid_;
+
+    // the task_id of each isnt
+    std::vector<int> inst_task_id_;
+
+    // whether the inst goes left (true) or right (false)
+    std::vector<bool> inst_go_left_;
+
+
+    //TODO: how to init the vec in vec ?
+    // note that the index starts from 0
+    // G and H in capital means the sum of the G and H over all the instances
+    // store the G and H in the node, in order to calculate w* for the whole node 
+    std::vector<float> G_node_;
+    std::vector<float> H_node_;
+
+    // store the G and H for each task in each node's left and right child, the 
+    std::vector<std::vector<float> > G_task_lnode_;
+    std::vector<std::vector<float> > G_task_rnode_;
+    std::vector<std::vector<float> > H_task_lnode_;
+    std::vector<std::vector<float> > H_task_rnode_; //TODO: init 
+    
+    
   };
 };
 

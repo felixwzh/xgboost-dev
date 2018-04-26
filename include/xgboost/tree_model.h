@@ -79,8 +79,9 @@ class TreeModel {
    public:
     Node()  {
       // assert compact alignment
-      static_assert(sizeof(Node) == 4 * sizeof(int) + sizeof(Info),
-                    "Node: 64 bit align");
+      /* static_assert(sizeof(Node) == 4 * sizeof(int) + sizeof(Info),
+                   "Node: 64 bit align");*/ 
+      // FIXME: fix this assert here, because this may lead to performance loss
     }
     /*! \brief index of left child */
     inline int LeftChild() const {
@@ -137,7 +138,7 @@ class TreeModel {
     inline void SetRightChild(int nid) {
       this->cright_ = nid;
     }
-    /*!
+    /*! TODO: change here
      * \brief set split condition of current node
      * \param split_index feature index to split
      * \param split_cond  split condition
@@ -175,6 +176,13 @@ class TreeModel {
       bst_float leaf_value;
       TSplitCond split_cond;
     };
+
+
+    bool is_task_node = false;
+    // stores the tasks numbers that should be passed to the left and right.
+    std::vector<int> left_tasks, right_tasks;
+    
+
     // pointer to parent, highest bit is used to
     // indicate whether it's a left child or not
     int parent_;
