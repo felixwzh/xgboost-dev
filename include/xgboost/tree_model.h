@@ -131,6 +131,21 @@ class TreeModel {
     inline bool IsRoot() const {
       return parent_ == -1;
     }
+
+    inline bool IsTaskNode() const {
+      return is_task_node;
+    }
+
+    inline std::vector<int> LeftTasks() const {
+      return left_tasks;
+    }
+
+    inline std::vector<int> RightTasks() const {
+      return right_tasks;
+    }
+    // stores the tasks numbers that should be passed to the left and right.
+    
+
     /*!
      * \brief set the right child
      * \param nid node id to right child
@@ -138,16 +153,46 @@ class TreeModel {
     inline void SetRightChild(int nid) {
       this->cright_ = nid;
     }
-    /*! TODO: change here
+    /*! 
      * \brief set split condition of current node
      * \param split_index feature index to split
      * \param split_cond  split condition
      * \param default_left the default direction when feature is unknown
      */
-    inline void SetSplit(unsigned split_index, TSplitCond split_cond,
-                          bool default_left = false) {
+
+    
+    inline void SetSplitTask(unsigned split_index, 
+                          TSplitCond split_cond,
+                          std::vector<int> left_tasks,
+                          std::vector<int> right_tasks,
+                          bool default_left = false,
+                          bool is_task_split = false) { 
+      if (!is_task_split) {
+        if (default_left) split_index |= (1U << 31);
+        this->sindex_ = split_index;
+        (this->info_).split_cond = split_cond;
+      }
+      else {
+        // if (default_left) split_index |= (1U << 31);
+        this->sindex_ = 0;
+        (this->info_).split_cond = split_cond;
+        // this->sindex_ = split_index; // FIXME: not sure here, is this usefull?
+        this->is_task_node = is_task_node;
+        this->left_tasks=left_tasks;
+        this->right_tasks=right_tasks;
+      }
+    }
+
+    inline void SetSplit(unsigned split_index, 
+                          TSplitCond split_cond,
+                          bool default_left = false) { 
       if (default_left) split_index |= (1U << 31);
       this->sindex_ = split_index;
+
+
+
+
+      
       (this->info_).split_cond = split_cond;
     }
     /*!
@@ -177,11 +222,11 @@ class TreeModel {
       TSplitCond split_cond;
     };
 
-
+    // used to indicate whether this node is a task split node or not.
     bool is_task_node = false;
+
     // stores the tasks numbers that should be passed to the left and right.
     std::vector<int> left_tasks, right_tasks;
-    
 
     // pointer to parent, highest bit is used to
     // indicate whether it's a left child or not
@@ -610,8 +655,33 @@ inline bool RegTree::FVec::IsMissing(size_t i) const {
 inline int RegTree::GetLeafIndex(const RegTree::FVec& feat, unsigned root_id) const {
   auto pid = static_cast<int>(root_id);
   while (!(*this)[pid].IsLeaf()) {
-    unsigned split_index = (*this)[pid].SplitIndex();
-    pid = this->GetNext(pid, feat.Fvalue(split_index), feat.IsMissing(split_index));
+    if (!(*this)[pid].IsTaskNode()){
+      unsigned split_index = (*this)[pid].SplitIndex();
+      pid = this->GetNext(pid, feat.Fvalue(split_index), feat.IsMissing(split_index));
+    }
+    else{
+      std::vector<int> left_tasks =(*this)[pid].LeftTasks();
+      std::vector<int> right_tasks =(*this)[pid].RightTasks();
+
+
+      int task_value = int(feat.Fvalue(0)); // task's feature id is 0
+      // search whether it is in the left tasks or not 
+      std::vector<int>::iterator ret = std::find(left_tasks.begin(), left_tasks.end(), task_value);
+      if (ret!=left_tasks.end()){
+        pid = (*this)[pid].LeftChild();
+      }
+      else {
+        // search whether it is in the right tasks or not 
+        std::vector<int>::iterator ret = std::find(right_tasks.begin(), right_tasks.end(), task_value);
+        if (ret!=right_tasks.end()){
+          pid = (*this)[pid].RightChild();
+        }
+        else{
+          exit(99);
+        }
+      }
+    }
+    
   }
   return pid;
 }

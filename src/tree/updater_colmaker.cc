@@ -4,6 +4,21 @@
  * \brief use columnwise update to construct a tree
  * \author Tianqi Chen
  */
+
+
+/* TODO: here are the feature that should be add in this cpp file
+ * 1.-count and print the task split node num in each tree
+ * 2. add the function of 1-4 split comparing
+ * 3. add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
+ * 4. add a function to do task_gain_self split
+ * 5. add a fucntion to do w* split with 1-4 task split comparing
+ * 6. add a mechanism that if the right tasks all have the positive task gain, we set the will not perform task split at that node.
+ * 7. test the result in test data, and make prediction on every center.
+ * 8. use the positive ratio as a split metric, baseline model
+ * 9. add some criteria to make task split in a normalized and non-sensitive way. 
+ */
+
+
 #include <xgboost/tree_updater.h>
 #include <memory>
 #include <vector>
@@ -110,6 +125,14 @@ class ColMaker: public TreeUpdater {
         p_tree->Stat(nid).sum_hess = static_cast<float>(snode_[nid].stats.sum_hess);
         snode_[nid].stats.SetLeafVec(param_, p_tree->Leafvec(nid));
       }
+      // print the tree split node in the tree
+      int num_task_node_=0;
+      for (bool is_task_node_flag : is_task_node_){
+        if (is_task_node_flag){
+          num_task_node_+=1;
+        }
+      }
+      LOG(INFO) <<"  "<<num_task_node_<<"  task split nodes";
     }
 
    protected:
@@ -165,6 +188,12 @@ class ColMaker: public TreeUpdater {
         CHECK_GT(param_.colsample_bytree, 0U)
             << "colsample_bytree cannot be zero.";
         feat_index_.resize(n);
+
+        // add the task feature if if is dropped by colsample_bytree
+        std::vector<bst_uint>::iterator ret = std::find(feat_index_.begin(), feat_index_.end(), 0);
+        if (ret==feat_index_.end()){
+          feat_index_.push_back(0);
+        }
       }
       {
         // setup temp space for each thread
@@ -197,7 +226,7 @@ class ColMaker: public TreeUpdater {
         for (size_t i = 0; i < stemp_.size(); ++i) {
           stemp_[i].resize(tree.param.num_nodes, ThreadEntry(param_));
         }
-        snode_.resize(tree.param.num_nodes, NodeEntry(param_)); // FIXME: learn this, 
+        snode_.resize(tree.param.num_nodes, NodeEntry(param_));
         constraints_.resize(tree.param.num_nodes);
       }
       const RowSet &rowset = fmat.BufferedRowset();
@@ -527,7 +556,7 @@ class ColMaker: public TreeUpdater {
                                const std::vector<GradientPair> &gpair,
                                const MetaInfo &info,
                                std::vector<ThreadEntry> &temp) { // NOLINT(*)
-                               // TODO:  what is ThreadEntry? this is a node?
+                               // TODO: this function might be useful, for 1->4 task split compare
       // use cacheline aware optimization
       if (TStats::kSimpleStats != 0 && param_.cache_opt != 0) {
         EnumerateSplitCacheOpt(begin, end, d_step, fid, gpair, temp);
@@ -542,28 +571,28 @@ class ColMaker: public TreeUpdater {
       TStats c(param_);
       for (const ColBatch::Entry *it = begin; it != end; it += d_step) {
         const bst_uint ridx = it->index;
-        const int nid = position_[ridx];   // FIXME: this is the one that store which the data belongs to!
+        const int nid = position_[ridx];
         if (nid < 0) continue;
         // start working
         const bst_float fvalue = it->fvalue;
         // get the statistics of nid
-        ThreadEntry &e = temp[nid];    // TODO:  this one is important
+        ThreadEntry &e = temp[nid];    
         // test if first hit, this is fine, because we set 0 during init
         if (e.stats.Empty()) { 
-          e.stats.Add(gpair, info, ridx);  // TODO: fixme:  important function   
-          e.last_fvalue = fvalue;   // TODO: important function 
+          e.stats.Add(gpair, info, ridx);  
+          e.last_fvalue = fvalue;   
         } else {
           // try to find a split
           if (fvalue != e.last_fvalue &&
               e.stats.sum_hess >= param_.min_child_weight) {
-            c.SetSubstract(snode_[nid].stats, e.stats); // TODO: important function
+            c.SetSubstract(snode_[nid].stats, e.stats); 
             if (c.sum_hess >= param_.min_child_weight) {
               bst_float loss_chg;
               if (d_step == -1) {
                 loss_chg = static_cast<bst_float>(
-                    constraints_[nid].CalcSplitGain( // TODO: important function
+                    constraints_[nid].CalcSplitGain( 
                         param_, param_.monotone_constraints[fid], c, e.stats) -
-                    snode_[nid].root_gain); // TODO: important function, we can use snode_[nid].root_gain
+                    snode_[nid].root_gain); 
               } else {
                 loss_chg = static_cast<bst_float>(
                     constraints_[nid].CalcSplitGain(
@@ -654,7 +683,7 @@ class ColMaker: public TreeUpdater {
                                 const std::vector<int> &qexpand,
                                 const int num_node_){
 
-      std::vector<unsigned> nid_split_index;
+      std::vector<int> nid_split_index;
       nid_split_index.resize(num_node_,0);
       std::vector<float> nid_split_cond;
       nid_split_cond.resize(num_node_,0);
@@ -668,9 +697,9 @@ class ColMaker: public TreeUpdater {
       }  
       std::sort(fsplits.begin(), fsplits.end());
       fsplits.resize(std::unique(fsplits.begin(), fsplits.end()) - fsplits.begin());
-      // std::cout<<"1"<<'\n';
 
       dmlc::DataIter<ColBatch> *iter_task = p_fmat->ColIterator(fsplits);
+      
       while (iter_task->Next()) {  
         const ColBatch &batch = iter_task->Value();
         for (size_t i = 0; i < batch.size; ++i) {
@@ -680,11 +709,10 @@ class ColMaker: public TreeUpdater {
           #pragma omp parallel for schedule(static)
           for (bst_omp_uint j = 0; j < ndata; ++j) {
             const bst_uint ridx = col[j].index;
-            const int nid = position_[ridx];
-            std::cout<<nid<<'\t';      
+            const int nid = DecodePosition(ridx);  // HINT: remember this mistake, don't trust the name of data
             inst_nid_.at(ridx)=nid;
             const bst_float fvalue = col[j].fvalue;
-            if (nid_split_index.at(nid) == fid) {
+            if (nid_split_index.at(nid) == fid) { 
               if (fvalue < nid_split_cond.at(nid)) {
                 inst_go_left_.at(ridx)=true;
               } else {
@@ -694,8 +722,7 @@ class ColMaker: public TreeUpdater {
           }
         }
       }
-      std::cout<<"2"<<'\n';
-
+      
       iter_task = p_fmat->ColIterator(feat_set);
       while (iter_task->Next()) {
           auto batch = iter_task->Value();
@@ -714,8 +741,6 @@ class ColMaker: public TreeUpdater {
             const bst_float fvalue = it->fvalue;
             int task_value=int(fvalue);
 
-            // const int nid = position_[ridx];
-            // inst_nid_.at(ridx)=nid;
             inst_task_id_.at(ridx)=task_value;
           }
         }
@@ -739,29 +764,215 @@ class ColMaker: public TreeUpdater {
       // std::cout<<*biggest<<"\t\n";
       G_node_.resize(num_node_);
       H_node_.resize(num_node_);
+      is_task_node_.resize(num_node_);
       for (int nid : qexpand) {
         G_node_.at(nid)=0;
         H_node_.at(nid)=0;
+        is_task_node_.at(nid)=false;
       }
+
+    
+
+
       // store the G and H for each task in each node's left and right child, the 
       G_task_lnode_.resize(num_node_);
       G_task_rnode_.resize(num_node_);
       H_task_lnode_.resize(num_node_);
       H_task_rnode_.resize(num_node_);
+
+      task_gain_self_.resize(num_node_);
+      task_gain_all_.resize(num_node_);
+      
+      
+      // store the left and right task task_idx for each task split node 
+      task_node_left_tasks_.resize(num_node_);
+      task_node_right_tasks_.resize(num_node_);
+      // we can resize the tasks when needed. 
+
+
+      task_w_.resize(num_node_);
       for (int nid : qexpand) {
         G_task_lnode_.at(nid).resize(task_num_for_init_vec,-1);
         G_task_rnode_.at(nid).resize(task_num_for_init_vec,-1);
         H_task_lnode_.at(nid).resize(task_num_for_init_vec,-1);
         H_task_rnode_.at(nid).resize(task_num_for_init_vec,-1);
+        task_gain_self_.at(nid).resize(task_num_for_init_vec,-1);
+        task_gain_all_.at(nid).resize(task_num_for_init_vec,-1);
+        task_w_.at(nid).resize(task_num_for_init_vec,-1);
+        
         for (int task_id : tasks_list_){
           G_task_lnode_.at(nid).at(task_id)=0;
           G_task_rnode_.at(nid).at(task_id)=0;
           H_task_lnode_.at(nid).at(task_id)=0;
           H_task_rnode_.at(nid).at(task_id)=0;
+          task_gain_self_.at(nid).at(task_id)=0;
+          task_gain_all_.at(nid).at(task_id)=0;
+          task_w_.at(nid).at(task_id)=0;
+ 
         }  
       }
 
     }
+
+    inline void CalcGHInNode(int num_row,const std::vector<GradientPair> &gpair){
+      for (int ridx =0;ridx<num_row;ridx++){
+        // get the gradient 
+        const GradientPair& b = gpair[ridx];
+        int nid=inst_nid_.at(ridx);
+        int task_id=inst_task_id_.at(ridx);
+
+        //calcu G_node and H_node
+        G_node_.at(nid)+=b.GetGrad();
+        H_node_.at(nid)+=b.GetHess();
+
+        if (inst_go_left_.at(ridx)){
+          G_task_lnode_.at(nid).at(task_id)+=b.GetGrad();
+          H_task_lnode_.at(nid).at(task_id)+=b.GetHess();
+        }  
+        else {
+          G_task_rnode_.at(nid).at(task_id)+=b.GetGrad();
+          H_task_rnode_.at(nid).at(task_id)+=b.GetHess();
+        }
+      }
+    }
+
+
+    inline float Square(float x){return x*x;}
+
+    inline void CalcTaskWStar(const std::vector<int> &qexpand){
+      for (int nid : qexpand){
+        for (int task_id : tasks_list_){
+          task_w_.at(nid).at(task_id)= -G_task_rnode_.at(nid).at(task_id) / (H_task_rnode_.at(nid).at(task_id) +param_.reg_lambda);        
+        }
+      }
+    }
+
+    inline void CalcTaskGainSelf(const std::vector<int> &qexpand){
+      for (int nid : qexpand){
+        //TODO: should we follow the whole setting of xgboost? I mean the beta and gamma term if xgboost's gain calculation.
+        for (int task_id : tasks_list_){
+          float gain_left= Square(G_task_lnode_.at(nid).at(task_id))/(H_task_lnode_.at(nid).at(task_id)+param_.reg_lambda);
+          float gain_right= Square(G_task_rnode_.at(nid).at(task_id))/(H_task_rnode_.at(nid).at(task_id)+param_.reg_lambda);
+          float gain=Square(G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id))/
+                    (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id)+param_.reg_lambda);
+
+          task_gain_self_.at(nid).at(task_id)=0.5*(gain_left+gain_right-gain); //FIXME: should we subtract param_.gamma 
+        }
+      }
+    }
+    inline void CalcTaskGainAll(const std::vector<int> &qexpand){
+      for (int nid : qexpand){
+        // cal w_l and w_r
+        float G_L=0, G_R=0, H_L=0, H_R=0;
+        for (int task_id : tasks_list_){
+          G_L+=G_task_lnode_.at(nid).at(task_id);
+          G_R+=G_task_rnode_.at(nid).at(task_id);
+          H_L+=H_task_lnode_.at(nid).at(task_id);
+          H_R+=H_task_rnode_.at(nid).at(task_id);
+        }
+        float w_L=-G_L/(H_L+param_.reg_lambda);
+        float w_R=-G_R/(H_R+param_.reg_lambda);
+        float w=-(G_L+G_R)/(H_L+H_R+param_.reg_lambda);
+        // TODO: fix the lambda here!
+        for (int task_id : tasks_list_){
+          float gain_left = -(G_task_lnode_.at(nid).at(task_id)*w_L+0.5*(H_task_lnode_.at(nid).at(task_id)+param_.reg_lambda)*Square(w_L));
+          float gain_right = -(G_task_rnode_.at(nid).at(task_id)*w_R+0.5*(H_task_rnode_.at(nid).at(task_id)+ param_.reg_lambda)*Square(w_R));
+          float gain = ( (G_task_lnode_.at(nid).at(task_id) + G_task_rnode_.at(nid).at(task_id) ) * w
+                       +0.5*( H_task_lnode_.at(nid).at(task_id) + H_task_rnode_.at(nid).at(task_id) + param_.reg_lambda ) * Square(w));
+          task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain;
+        }
+      }
+    }
+
+    inline void SimpleTaskGainSelfSplit(const std::vector<int> &qexpand,RegTree *tree,bool successive_task_split, int min_task_gain){
+      for (int nid : qexpand){
+        // check if there are negative gain in this node
+        bool all_positive_flag=true;
+        for (float task_gain : task_gain_self_.at(nid)){
+          // if ((task_gain-0)<1e-6){
+          if ((task_gain-0)<min_task_gain){ //FIXME:  FIX this hard margin here
+            
+            all_positive_flag=false;
+            break;
+          }
+        }
+
+        // is the parent is already a task split node, then the node will not perform task split.
+        if (!successive_task_split){
+          if (nid>0){
+            int p_ind = (*tree)[nid].Parent();
+              if (is_task_node_.at(p_ind)){
+                all_positive_flag=true;
+              }
+          }
+        }
+
+        // if all positive, then it is not a task split node
+        if (all_positive_flag){
+          is_task_node_.at(nid)=false;
+        }
+        // else this is a task split node, and we assign the task to left and right
+        else{
+          is_task_node_.at(nid)=true;
+          for (int task_id : tasks_list_){
+            // if ((task_gain_self_.at(nid).at(task_id)-0)<1e-6) {
+            if ((task_gain_self_.at(nid).at(task_id)-0)<min_task_gain) {
+              
+              task_node_left_tasks_.at(nid).push_back(task_id);
+              }
+            else{
+              task_node_right_tasks_.at(nid).push_back(task_id);
+            } 
+          }
+        }
+      }
+    }
+
+    inline void SimpleTaskGainAllSplit(const std::vector<int> &qexpand,RegTree *tree,bool successive_task_split, int min_task_gain){
+      for (int nid : qexpand){
+        // check if there are negative gain in this node
+        bool all_positive_flag=true;
+        for (float task_gain : task_gain_all_.at(nid)){
+          // if ((task_gain-0)<1e-6){
+          if ((task_gain-0)<min_task_gain){ //FIXME:  FIX this hard margin here
+            
+            all_positive_flag=false;
+            break;
+          }
+        }
+
+        // is the parent is already a task split node, then the node will not perform task split.
+        if (!successive_task_split){
+          if (nid>0){
+            int p_ind = (*tree)[nid].Parent();
+              if (is_task_node_.at(p_ind)){
+                all_positive_flag=true;
+              }
+          }
+        }
+
+        // if all positive, then it is not a task split node
+        if (all_positive_flag){
+          is_task_node_.at(nid)=false;
+        }
+        // else this is a task split node, and we assign the task to left and right
+        else{
+          is_task_node_.at(nid)=true;
+          for (int task_id : tasks_list_){
+            if ((task_gain_all_.at(nid).at(task_id)-0)<1e-6) {
+            // if ((task_gain_all_.at(nid).at(task_id)-0)<min_task_gain) {
+              
+              task_node_left_tasks_.at(nid).push_back(task_id);
+              }
+            else{
+              task_node_right_tasks_.at(nid).push_back(task_id);
+            } 
+          }
+        }
+      }
+    }
+    
+      
     
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
@@ -778,6 +989,14 @@ class ColMaker: public TreeUpdater {
             << "colsample_bylevel cannot be zero.";
         feat_set.resize(n);
       }
+
+      // we should add the task feature if it is dropped by the colsample_bylevel
+      std::vector<bst_uint>::iterator ret = std::find(feat_set.begin(), feat_set.end(), 0);
+      if (ret==feat_set.end()){
+        feat_set.push_back(0);
+      }
+
+
       dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set);
       while (iter->Next()) {
         this->UpdateSolution(iter->Value(), gpair, *p_fmat); //because it's level wise training
@@ -798,12 +1017,12 @@ class ColMaker: public TreeUpdater {
         *    we also have to update several predicting functions that uses the tree structure.
         *
         * */
-      int node_isn_num[100];
 
       /****************************** init auxiliary val ***********************************/
       auto num_row=p_fmat->Info().num_row_;
-      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));
+      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
+
       InitAuxiliary(num_row,num_node,qexpand_);
       // std::cout<<"init aux"<<'\n';
 
@@ -812,110 +1031,39 @@ class ColMaker: public TreeUpdater {
       // for (int ind : inst_nid_){std::cout<<ind<<"\t";}
       // for (int ind : inst_task_id_){std::cout<<ind<<"\t";}
       // for (int ind : inst_go_left_){std::cout<<ind<<"\t";}
-      // std::cout<<"assign"<<'\n';
+
+      /************************* calculate G, H through the whole data*************************/
+      CalcGHInNode(num_row,gpair);
+
+      /************* calculate task_gain_self and task_gain_self through the whole data********/
+      CalcTaskWStar(qexpand_);
+      CalcTaskGainSelf(qexpand_);
+      CalcTaskGainAll(qexpand_);
+
+      /******************  conduct task split based on the task_gain_all & sefl ****************/
+      // bool task_split_flag=false;
+      bool task_split_flag=true;
       
+      // bool successive_task_split=false;
+      bool successive_task_split=true;
 
+      int min_task_gain=-3;
 
-      /************* starts of calculate G, H through the whole data*******/
-      // step 0, resize the G,H,for node and task here following this :
-      /*
-      snode_.resize(tree.param.num_nodes, NodeEntry(param_)); // FIXME: learn this, 
-      constraints_.resize(tree.param.num_nodes);
-      */
+      if (task_split_flag){
+        // SimpleTaskGainAllSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
+        SimpleTaskGainSelfSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
+      }
 
-
-
-      
-
-
-
-      /************* end    of calculate G, H through the whole data*******/
-      
-
-
-
-
-
-
-      // for (int nid : qexpand) {
-
-        
-
-
-
-      //   //  NodeEntry &e = snode_[nid];
-      //   NodeEntry &e = snode_[nid];
-      //   auto best_feature_split_fidx = e.best.SplitIndex();
-      //   auto best_feature_split_value = e.best.split_value;
-
-
-
-      //   std::cout<<nid<<" th node here \n\n"<<'\n';
-      //   dmlc::DataIter<ColBatch>* iter = p_fmat->ColIterator(feat_set); // how to get the data just at this node? 
-
-      //   int ins_in_bacth_list[100]={0};
-      //   int bacth_iter_cnt=0;
-      //   int ins_num_in_batch=0;
-      //   int task_cnt_list[30]={0};
-      //   int task_G_list[30]={0};
-      //   int task_H_list[30]={0};
-        
-
-      //   // define the G_L_task,H_L_task,G_R_task,h_R_task, G_task, H_task for further computing.
-      //   float G_L_task=0,H_L_task=0,G_R_task=0,h_R_task=0,G_task=0,H_task=0;           
-        
-      //   while (iter->Next()) {
-      //     auto batch = iter->Value();
-      //     const auto nsize = static_cast<bst_omp_uint>(batch.size);
-      //     bst_omp_uint task_i;
-      //     for (bst_omp_uint i = 0; i < nsize; ++i) {
-      //     const bst_uint fid = batch.col_index[i];  // should check the feature idx, i is not the idx.
-      //     if (fid==0){
-      //       task_i = i; // find the task idx task_i
-      //       break;
-      //       }
-      //     }  
-          
-      //     ins_num_in_batch=0;
-      //     // get the task data.
-      //     const ColBatch::Inst task_c = batch[task_i];
-
-      //     // check the data
-      //     for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
-            
-      //       const bst_uint ridx = it->index;
-
-
-      //       const int ins_nid=position_[ridx];
-      //       if (nid==ins_nid){ // make sure that the ins belongs to the corrent processing node with nid. FIXME, could be parallel LATER
-      //         // const int nid = position_[ridx];
-      //         const bst_float fvalue = it->fvalue;
-      //         int task_value=int(fvalue);
-      //         task_cnt_list[task_value]++;
-
-      //         ins_num_in_batch++;
-              
-      //         // get the gradient here
-      //         const GradientPair& b = gpair[ridx];
-      //         G_task+=b.GetGrad();
-      //         task_G_list[task_value]+=b.GetGrad();
-              
-      //         H_task+=b.GetHess();
-      //         task_H_list[task_value]+=b.GetHess();
-
-      //       }
-      //     }
-      //   bacth_iter_cnt++;
+      // for (int nid : qexpand_){
+      //   for (int task_id : tasks_list_){
+      //     // std::cout<<task_gain_self_.at(nid).at(task_id)<<"\t";
+      //     std::cout<<task_gain_all_.at(nid).at(task_id)<<"\t";
+      //     // std::cout<<task_w_.at(nid).at(task_id)<<"\t";
       //   }
-      //   if (bacth_iter_cnt<100){
-      //     ins_in_bacth_list[bacth_iter_cnt]=ins_num_in_batch;
-      //     std::cout<<ins_num_in_batch<<'\n';
-          
-      //   }
-        
+      //   std::cout<<"\n";
       // }
-
-
+      // std::cout<<"===========================================\n";
+      
       //=====================  end   of task split =======================
 
         for (int nid : qexpand) {
@@ -923,10 +1071,28 @@ class ColMaker: public TreeUpdater {
         // now we know the solution in snode[nid], set split
         if (e.best.loss_chg > kRtEps) {
           p_tree->AddChilds(nid);
-          (*p_tree)[nid].SetSplit(e.best.SplitIndex(), e.best.split_value, e.best.DefaultLeft());
-          // mark right child as 0, to indicate fresh leaf
-          (*p_tree)[(*p_tree)[nid].LeftChild()].SetLeaf(0.0f, 0);
-          (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
+          (*p_tree)[nid].SetSplitTask(e.best.SplitIndex(), 
+                                    e.best.split_value,
+                                    // left_tasks
+                                    task_node_left_tasks_.at(nid),
+                                    // right_tasks
+                                    task_node_right_tasks_.at(nid),
+                                    e.best.DefaultLeft(),
+                                    is_task_node_.at(nid)
+                                    // is_task_split
+                                    );
+
+          
+          if (!is_task_node_.at(nid)){
+            // mark right child as 0, to indicate fresh leaf
+            (*p_tree)[(*p_tree)[nid].LeftChild()].SetLeaf(0.0f, 0);
+            (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
+          }
+          else{
+            (*p_tree)[(*p_tree)[nid].LeftChild()].SetLeaf(0.0f, 0);
+            (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
+          }
+          
         } else {
           (*p_tree)[nid].SetLeaf(e.weight * param_.learning_rate);
         }
@@ -951,6 +1117,7 @@ class ColMaker: public TreeUpdater {
         CHECK_LT(ridx, position_.size())
             << "ridx exceed bound " << "ridx="<<  ridx << " pos=" << position_.size();
         const int nid = this->DecodePosition(ridx);
+        
         if (tree[nid].IsLeaf()) {
           // mark finish when it is not a fresh leaf
           if (tree[nid].RightChild() == -1) {
@@ -958,6 +1125,7 @@ class ColMaker: public TreeUpdater {
           }
         } else {
           // push to default branch
+          // if we can hold that all task feature will never be empty, we can leave the code here.
           if (tree[nid].DefaultLeft()) {
             this->SetEncodePosition(ridx, tree[nid].LeftChild());
           } else {
@@ -985,27 +1153,72 @@ class ColMaker: public TreeUpdater {
         if (!tree[nid].IsLeaf()) {
           fsplits.push_back(tree[nid].SplitIndex());
         }
+        // we need to add task feature here,
+        if (is_task_node_.at(nid)){
+          fsplits.push_back(0); // this may do
+        }
       }
+
       std::sort(fsplits.begin(), fsplits.end());
       fsplits.resize(std::unique(fsplits.begin(), fsplits.end()) - fsplits.begin());
+
+      dmlc::DataIter<ColBatch> *iter_temp = p_fmat->ColIterator(fsplits);
+      const ColBatch &batch_temp = iter_temp->Value();
+      ColBatch::Inst col = batch_temp[0];
+      const auto ndata = static_cast<bst_omp_uint>(col.length);
+      temp_position_.resize(ndata);
+          for (bst_omp_uint j = 0; j < ndata; ++j) {
+            const bst_uint ridx = col[j].index;
+            const int nid = this->DecodePosition(ridx);
+            temp_position_.at(ridx)=nid;
+          }
       dmlc::DataIter<ColBatch> *iter = p_fmat->ColIterator(fsplits);
-      while (iter->Next()) {  //TODO: learn the code here!
+      while (iter->Next()) { 
         const ColBatch &batch = iter->Value();
         for (size_t i = 0; i < batch.size; ++i) {
           ColBatch::Inst col = batch[i];
           const bst_uint fid = batch.col_index[i];
           const auto ndata = static_cast<bst_omp_uint>(col.length);
-          #pragma omp parallel for schedule(static)
+          #pragma omp parallel for schedule(static)   
           for (bst_omp_uint j = 0; j < ndata; ++j) {
             const bst_uint ridx = col[j].index;
-            const int nid = this->DecodePosition(ridx);
+            const int nid = temp_position_.at(ridx);
             const bst_float fvalue = col[j].fvalue;
+            /* HINT: the bug here is caused by the logic of getting nid of a ridx. after the firts round of position
+            * assignment, some ridx has already change its nid in `position_`, then, when we vist the ridx for the second 
+            * time, the nid might be one that has not resered space in position_
+            * so, one solution is to remember the nid of each ridx before make the position assignment.
+            * TODO: is there any other solution?
+            * 
+            */
             // go back to parent, correct those who are not default
-            if (!tree[nid].IsLeaf() && tree[nid].SplitIndex() == fid) {
-              if (fvalue < tree[nid].SplitCond()) {
-                this->SetEncodePosition(ridx, tree[nid].LeftChild());
-              } else {
-                this->SetEncodePosition(ridx, tree[nid].RightChild());
+            if (!(is_task_node_.at(nid))){ // for those who are feature split 
+              if (!tree[nid].IsLeaf() && tree[nid].SplitIndex() == fid) {
+                if (fvalue < tree[nid].SplitCond()) {
+                  this->SetEncodePosition(ridx, tree[nid].LeftChild());
+                } else {
+                  this->SetEncodePosition(ridx, tree[nid].RightChild());
+                }
+              }
+            }
+            else{ // for those who are task split node  
+              if (!tree[nid].IsLeaf() && fid==0){
+                int task_value = int(fvalue);
+                // search whether it is in the left tasks or not 
+                std::vector<int>::iterator ret = std::find(task_node_left_tasks_.at(nid).begin(), task_node_left_tasks_.at(nid).end(), task_value);
+                if (ret!=task_node_left_tasks_.at(nid).end()){
+                  this->SetEncodePosition(ridx, tree[nid].LeftChild());
+                }
+                else {
+                  // search whether it is in the right tasks or not 
+                  std::vector<int>::iterator ret = std::find(task_node_right_tasks_.at(nid).begin(), task_node_right_tasks_.at(nid).end(), task_value);
+                  if (ret!=task_node_right_tasks_.at(nid).end()){
+                    this->SetEncodePosition(ridx, tree[nid].RightChild());
+                  }
+                  else{
+                    exit(99);                    
+                  }
+                }
               }
             }
           }
@@ -1061,7 +1274,7 @@ class ColMaker: public TreeUpdater {
     std::vector<bool> inst_go_left_;
 
 
-    //TODO: how to init the vec in vec ?
+
     // note that the index starts from 0
     // G and H in capital means the sum of the G and H over all the instances
     // store the G and H in the node, in order to calculate w* for the whole node 
@@ -1072,7 +1285,29 @@ class ColMaker: public TreeUpdater {
     std::vector<std::vector<float> > G_task_lnode_;
     std::vector<std::vector<float> > G_task_rnode_;
     std::vector<std::vector<float> > H_task_lnode_;
-    std::vector<std::vector<float> > H_task_rnode_; //TODO: init 
+    std::vector<std::vector<float> > H_task_rnode_; 
+
+    // store the task gain in each nid for each task; 
+    std::vector<std::vector<float> > task_gain_self_;
+    std::vector<std::vector<float> > task_gain_all_;
+
+    // store the task best w* in each node 
+    std::vector<std::vector<float> > task_w_;
+
+    // store the flag if the node nid is a task split node
+    std::vector<bool> is_task_node_;
+
+    // store the left and right task task_idx for each task split node 
+    std::vector<std::vector<int> > task_node_left_tasks_;
+    std::vector<std::vector<int> > task_node_right_tasks_;
+
+
+    // store the temp positon
+    std::vector<int> temp_position_;
+
+
+
+    
     
     
   };
@@ -1128,7 +1363,7 @@ class DistColMaker : public ColMaker<TStats, TConstraint> {
    protected:
     void SetNonDefaultPosition(const std::vector<int> &qexpand, DMatrix *p_fmat,
                                const RegTree &tree) override {
-      // step 2, classify the non-default data into right places
+      // step 2, classify the non-default data into right places 
       std::vector<unsigned> fsplits;
       for (int nid : qexpand) {
         if (!tree[nid].IsLeaf()) {
