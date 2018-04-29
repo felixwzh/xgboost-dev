@@ -7,15 +7,24 @@
 
 
 /* TODO: here are the feature that should be add in this cpp file
- * 1.-count and print the task split node num in each tree
- * 2. add the function of 1-4 split comparing
- * 3. add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
- * 4. add a function to do task_gain_self split
- * 5. add a fucntion to do w* split with 1-4 task split comparing
- * 6. add a mechanism that if the right tasks all have the positive task gain, we set the will not perform task split at that node.
+ * -----1.-count and print the task split node num in each tree
+ * -----3.-add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
+ * -----4.-add a function to do task_gain_self split
+ * -----6.-add a mechanism that if the right tasks all have the positive task gain, we set the will not perform task split at that node.
+ * 9. add some criteria to make task split in a normalized and non-sensitive way. from Yanru Qu
  * 7. test the result in test data, and make prediction on every center.
+ * 2. add the function of 1-4 split comparing
+ * 5. add a fucntion to do w* split with 1-4 task split comparing
  * 8. use the positive ratio as a split metric, baseline model
- * 9. add some criteria to make task split in a normalized and non-sensitive way. 
+ * 10. merge the param used in this file into the config, then we don't need to build the whole project every time.
+ */
+
+/* FIXME: here are some problems tobe solved
+ * 1. should we calculate task spilt gain in with many other param? like the beta and gamma...
+ * 2. 
+ * 
+ * 
+ *  
  */
 
 
@@ -700,6 +709,7 @@ class ColMaker: public TreeUpdater {
 
       dmlc::DataIter<ColBatch> *iter_task = p_fmat->ColIterator(fsplits);
       
+      // pre-split the data, get the left or right info
       while (iter_task->Next()) {  
         const ColBatch &batch = iter_task->Value();
         for (size_t i = 0; i < batch.size; ++i) {
@@ -723,6 +733,7 @@ class ColMaker: public TreeUpdater {
         }
       }
       
+      // find the task info, and calculate the task inst num at each node
       iter_task = p_fmat->ColIterator(feat_set);
       while (iter_task->Next()) {
           auto batch = iter_task->Value();
@@ -739,9 +750,23 @@ class ColMaker: public TreeUpdater {
           for (const ColBatch::Entry *it = task_c.data; it != task_c.data+task_c.length; it += 1) {
             const bst_uint ridx = it->index;
             const bst_float fvalue = it->fvalue;
-            int task_value=int(fvalue);
+            int task_id=int(fvalue);
 
-            inst_task_id_.at(ridx)=task_value;
+            const int nid = DecodePosition(ridx);
+
+            inst_task_id_.at(ridx)=task_id;
+
+            if (inst_go_left_.at(ridx)){
+              node_task_inst_num_left_.at(nid).at(task_id)+=1;
+              node_inst_num_left_.at(nid)+=1;
+            }
+            else{
+              node_task_inst_num_right_.at(nid).at(task_id)+=1;
+              node_inst_num_right_.at(nid)+=1;
+            }
+            
+            
+            
           }
         }
     }
@@ -782,11 +807,15 @@ class ColMaker: public TreeUpdater {
 
       task_gain_self_.resize(num_node_);
       task_gain_all_.resize(num_node_);
-      
-      
+      node_task_inst_num_left_.resize(num_node_);
+      node_task_inst_num_right_.resize(num_node_);
       // store the left and right task task_idx for each task split node 
       task_node_left_tasks_.resize(num_node_);
       task_node_right_tasks_.resize(num_node_);
+      
+      node_inst_num_left_.resize(num_node_);
+      node_inst_num_right_.resize(num_node_);
+      
       // we can resize the tasks when needed. 
 
 
@@ -799,8 +828,10 @@ class ColMaker: public TreeUpdater {
         task_gain_self_.at(nid).resize(task_num_for_init_vec,-1);
         task_gain_all_.at(nid).resize(task_num_for_init_vec,-1);
         task_w_.at(nid).resize(task_num_for_init_vec,-1);
-        
+        node_task_inst_num_left_.at(nid).resize(task_num_for_init_vec,-1);
+        node_task_inst_num_right_.at(nid).resize(task_num_for_init_vec,-1);
         for (int task_id : tasks_list_){
+        
           G_task_lnode_.at(nid).at(task_id)=0;
           G_task_rnode_.at(nid).at(task_id)=0;
           H_task_lnode_.at(nid).at(task_id)=0;
@@ -808,7 +839,9 @@ class ColMaker: public TreeUpdater {
           task_gain_self_.at(nid).at(task_id)=0;
           task_gain_all_.at(nid).at(task_id)=0;
           task_w_.at(nid).at(task_id)=0;
- 
+
+          node_task_inst_num_left_.at(nid).at(task_id)=0;
+          node_task_inst_num_right_.at(nid).at(task_id)=0;
         }  
       }
 
@@ -883,8 +916,54 @@ class ColMaker: public TreeUpdater {
         }
       }
     }
+    inline void CalcTaskGainAllLambdaWeighted(const std::vector<int> &qexpand){
+      for (int nid : qexpand){
+        // cal w_l and w_r
+        float G_L=0, G_R=0, H_L=0, H_R=0;
+        for (int task_id : tasks_list_){
+          G_L+=G_task_lnode_.at(nid).at(task_id);
+          G_R+=G_task_rnode_.at(nid).at(task_id);
+          H_L+=H_task_lnode_.at(nid).at(task_id);
+          H_R+=H_task_rnode_.at(nid).at(task_id);
+        }
+        float w_L=-G_L/(H_L+param_.reg_lambda);
+        float w_R=-G_R/(H_R+param_.reg_lambda);
+        float w=-(G_L+G_R)/(H_L+H_R+param_.reg_lambda);
+        // TODO: fix the lambda here!
+        for (int task_id : tasks_list_){
+            float left_lambda = 0;
+            float right_lambda = 0;
+            float lambda = 0;
+          
+          if (node_inst_num_left_.at(nid)!=0){
+            left_lambda = param_.reg_lambda*(node_task_inst_num_left_.at(nid).at(task_id)/node_inst_num_left_.at(nid));
+          }
+          else{
+            left_lambda = 0;
+          }
+          if (node_inst_num_right_.at(nid)!=0){
+            right_lambda = param_.reg_lambda*(node_task_inst_num_right_.at(nid).at(task_id)/node_inst_num_right_.at(nid));
+          }
+          else{
+            right_lambda = 0;
+          }
+          if ( ( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) ) != 0 ){
+            lambda = param_.reg_lambda*( ( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )
+                            / ( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) ) );
+          }
+          else{
+            lambda = 0;
+          }
+          float gain_left = -(G_task_lnode_.at(nid).at(task_id)*w_L+0.5*(H_task_lnode_.at(nid).at(task_id)+left_lambda)*Square(w_L));
+          float gain_right = -(G_task_rnode_.at(nid).at(task_id)*w_R+0.5*(H_task_rnode_.at(nid).at(task_id)+ right_lambda)*Square(w_R));
+          float gain = ( (G_task_lnode_.at(nid).at(task_id) + G_task_rnode_.at(nid).at(task_id) ) * w
+                       +0.5*( H_task_lnode_.at(nid).at(task_id) + H_task_rnode_.at(nid).at(task_id) + lambda ) * Square(w));
+          task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain;
+        }
+      }
+    }
 
-    inline void SimpleTaskGainSelfSplit(const std::vector<int> &qexpand,RegTree *tree,bool successive_task_split, int min_task_gain){
+    inline void SimpleTaskGainSelfSplit(const std::vector<int> &qexpand,RegTree *tree,int successive_task_split, int min_task_gain){
       for (int nid : qexpand){
         // check if there are negative gain in this node
         bool all_positive_flag=true;
@@ -898,7 +977,7 @@ class ColMaker: public TreeUpdater {
         }
 
         // is the parent is already a task split node, then the node will not perform task split.
-        if (!successive_task_split){
+        if (successive_task_split == 1){
           if (nid>0){
             int p_ind = (*tree)[nid].Parent();
               if (is_task_node_.at(p_ind)){
@@ -907,6 +986,16 @@ class ColMaker: public TreeUpdater {
           }
         }
 
+        if (successive_task_split==2){
+          if (nid>0){
+            int p_ind = (*tree)[nid].Parent();
+            int p_rchild_ind = (*tree)[nid].LeftChild();
+              if (is_task_node_.at(p_ind) && p_rchild_ind==nid){
+                all_positive_flag=true;
+              }
+          }
+        }
+        
         // if all positive, then it is not a task split node
         if (all_positive_flag){
           is_task_node_.at(nid)=false;
@@ -915,8 +1004,8 @@ class ColMaker: public TreeUpdater {
         else{
           is_task_node_.at(nid)=true;
           for (int task_id : tasks_list_){
-            // if ((task_gain_self_.at(nid).at(task_id)-0)<1e-6) {
-            if ((task_gain_self_.at(nid).at(task_id)-0)<min_task_gain) {
+            if ((task_gain_self_.at(nid).at(task_id)-0)<1e-6) {
+            // if ((task_gain_self_.at(nid).at(task_id)-0)<min_task_gain) {
               
               task_node_left_tasks_.at(nid).push_back(task_id);
               }
@@ -928,7 +1017,7 @@ class ColMaker: public TreeUpdater {
       }
     }
 
-    inline void SimpleTaskGainAllSplit(const std::vector<int> &qexpand,RegTree *tree,bool successive_task_split, int min_task_gain){
+    inline void SimpleTaskGainAllSplit(const std::vector<int> &qexpand,RegTree *tree,int successive_task_split, int min_task_gain){
       for (int nid : qexpand){
         // check if there are negative gain in this node
         bool all_positive_flag=true;
@@ -942,7 +1031,7 @@ class ColMaker: public TreeUpdater {
         }
 
         // is the parent is already a task split node, then the node will not perform task split.
-        if (!successive_task_split){
+        if (successive_task_split == 1){ 
           if (nid>0){
             int p_ind = (*tree)[nid].Parent();
               if (is_task_node_.at(p_ind)){
@@ -950,6 +1039,19 @@ class ColMaker: public TreeUpdater {
               }
           }
         }
+
+        // is the parent is already a task split node, then the right node will not perform task split.
+        if (successive_task_split==2){
+          
+          if (nid>0){
+            int p_ind = (*tree)[nid].Parent();
+              if (is_task_node_.at(p_ind) && !(*tree)[nid].IsLeftChild()){
+                // std::cout<<"miss the right node"<<"\n";
+                all_positive_flag=true;
+              }
+          }
+        }
+        
 
         // if all positive, then it is not a task split node
         if (all_positive_flag){
@@ -1038,20 +1140,21 @@ class ColMaker: public TreeUpdater {
       /************* calculate task_gain_self and task_gain_self through the whole data********/
       CalcTaskWStar(qexpand_);
       CalcTaskGainSelf(qexpand_);
-      CalcTaskGainAll(qexpand_);
+      // CalcTaskGainAll(qexpand_);
+      CalcTaskGainAllLambdaWeighted(qexpand_);
 
       /******************  conduct task split based on the task_gain_all & sefl ****************/
-      // bool task_split_flag=false;
-      bool task_split_flag=true;
+      bool task_split_flag=false;
+      // bool task_split_flag=true;
       
-      // bool successive_task_split=false;
-      bool successive_task_split=true;
-
-      int min_task_gain=-3;
-
+      // int successive_task_split=0;  // do nothing 
+      int successive_task_split=1;  // the task split node's two child will not perform task split 
+      // int successive_task_split=2;     // the task split node's right child will not perform task split  
+      // bool successive_task_split=true;
+      int min_task_gain=0;
       if (task_split_flag){
-        // SimpleTaskGainAllSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
-        SimpleTaskGainSelfSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
+        SimpleTaskGainAllSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
+        // SimpleTaskGainSelfSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
       }
 
       // for (int nid : qexpand_){
@@ -1304,6 +1407,13 @@ class ColMaker: public TreeUpdater {
 
     // store the temp positon
     std::vector<int> temp_position_;
+
+    // store the inst num of each task at each node to calculate the weighted task_gain_all
+    std::vector<std::vector<int> > node_task_inst_num_left_;
+    std::vector<std::vector<int> > node_task_inst_num_right_;
+    std::vector<int> node_inst_num_left_;
+    std::vector<int> node_inst_num_right_;
+    
 
 
 
