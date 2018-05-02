@@ -20,6 +20,35 @@ namespace tree {
 
 /*! \brief training parameters for regression tree */
 struct TrainParam : public dmlc::Parameter<TrainParam> {
+//TODO: we can define the param that we want to use in the task split here
+// 1. first, we define the param as a data member of this TrainParam class
+// 2. we then set the bounds and default value of this param
+
+
+
+
+
+  // // use to indicate whether we will conduct task split or not, if yes, =1
+  // int task_split_flag; //FIXME: not work
+
+  // the max negative sample ratio to determine when to do task split.
+  float max_neg_sample_ratio;
+
+  // whether to use task gain self, otherwise, use task gain all.
+  int use_task_gain_self;
+
+  // which kind of condition we will use to determine when to do task split
+  int when_task_split;
+
+  // which kind of task split way we will use to do task split
+  int how_task_split;
+
+  // the minimal task gain, if any task has a smaller task gain, we will conduct a task split here.
+  float min_task_gain;
+
+  // the hard margin use to partition the task
+  float task_gain_margin;
+
   // learning step size for a time
   float learning_rate;
   // minimum loss change required for a split
@@ -78,6 +107,37 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   int n_gpus;
   // declare the parameters
   DMLC_DECLARE_PARAMETER(TrainParam) {
+
+    // DMLC_DECLARE_FIELD(task_split_flag)
+    //     .set_default(1)
+    //     .describe("use to indicate whether we will conduct task split or not, if yes, =1."); //FIXME: not work
+
+    DMLC_DECLARE_FIELD(max_neg_sample_ratio)
+        .set_range(0.0f, 1.0f)
+        .set_default(0.3f)
+        .describe("the max negative sample ratio to determine when to do task split.");
+    
+    DMLC_DECLARE_FIELD(task_gain_margin)
+        .set_default(0.0f)
+        .describe("the hard margin use to partition the task.");
+
+    DMLC_DECLARE_FIELD(use_task_gain_self)
+        .set_default(1)
+        .describe("whether to use task gain self, otherwise, use task gain all.");
+
+    DMLC_DECLARE_FIELD(when_task_split)
+        .set_default(0)
+        .describe(" which kind of condition we will use to determine when to do task split");
+
+    DMLC_DECLARE_FIELD(how_task_split)
+        .set_default(0)
+        .describe(" which kind of task split way we will use to do task split");
+
+
+    DMLC_DECLARE_FIELD(min_task_gain)
+        // .set_upper_bound(0.0f)
+        .set_default(-1.0f)
+        .describe("the minimal task gain, if any task has a smaller task gain, we will conduct a task split here.");
     DMLC_DECLARE_FIELD(learning_rate)
         .set_lower_bound(0.0f)
         .set_default(0.3f)

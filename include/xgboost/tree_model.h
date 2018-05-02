@@ -189,10 +189,6 @@ class TreeModel {
       if (default_left) split_index |= (1U << 31);
       this->sindex_ = split_index;
 
-
-
-
-      
       (this->info_).split_cond = split_cond;
     }
     /*!

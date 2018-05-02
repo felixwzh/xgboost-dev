@@ -11,12 +11,15 @@
  * -----3.-add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
  * -----4.-add a function to do task_gain_self split
  * -----6.-add a mechanism that if the right tasks all have the positive task gain, we set the will not perform task split at that node.
- * 9. add some criteria to make task split in a normalized and non-sensitive way. from Yanru Qu
- * 7. test the result in test data, and make prediction on every center.
+ * -----10.-merge the param used in this file into the config, then we don't need to build the whole project every time.
+ * -----7.-test the result in test data, and make prediction on every center.
+ * -----11.-seperate the when and how function, first generate the task split node, then generate the best left tasks, and best right tasks
+ * -----9.-add some criteria to make task split in a normalized and non-sensitive way. from Yanru Qu
+ * 13. compare the loss, but not the AUC. in the result
+ * 12. tune the parameter on validation set, instead of test set.
  * 2. add the function of 1-4 split comparing
  * 5. add a fucntion to do w* split with 1-4 task split comparing
  * 8. use the positive ratio as a split metric, baseline model
- * 10. merge the param used in this file into the config, then we don't need to build the whole project every time.
  */
 
 /* FIXME: here are some problems tobe solved
@@ -24,7 +27,7 @@
  * 2. 
  * 
  * 
- *  
+ *   
  */
 
 
@@ -872,6 +875,9 @@ class ColMaker: public TreeUpdater {
 
     inline float Square(float x){return x*x;}
 
+
+    
+
     inline void CalcTaskWStar(const std::vector<int> &qexpand){
       for (int nid : qexpand){
         for (int task_id : tasks_list_){
@@ -961,6 +967,94 @@ class ColMaker: public TreeUpdater {
           task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain;
         }
       }
+    }
+
+
+    inline bool WhenTaskSplitHardMargin(std::vector<std::vector<float> > * task_gain_,int nid, float min_task_gain){
+      for (float task_gain : task_gain_->at(nid)){
+        if (task_gain<min_task_gain){
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // when the sample ratio of tasks that have negative task gain is larger than max_neg_sample_ratio, we set this node as a task split node
+    inline bool WhenTaskSplitNegativeSampleRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+      
+      float neg_task_gain_sample_num=0;
+      float sample_num=( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) );
+      float task_gain =0;
+      
+      for (int task_id : tasks_list_){
+        task_gain = task_gain_->at(nid).at(task_id);
+        if (task_gain<0){
+          neg_task_gain_sample_num+=( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) );
+        }
+      }
+
+      if ( (neg_task_gain_sample_num/sample_num) > max_neg_sample_ratio){
+        return true;
+      }
+      else{
+        return false;
+      }
+    }
+
+    inline void HowTaskSplitHardMargin(std::vector<std::vector<float> > * task_gain_,const std::vector<int> &qexpand){
+      for (int nid : qexpand){
+        if (is_task_node_.at(nid)){
+          for (int task_id : tasks_list_){
+            if ((task_gain_->at(nid).at(task_id)-0)<param_.task_gain_margin) {
+              task_node_left_tasks_.at(nid).push_back(task_id);
+              }
+            else{
+              task_node_right_tasks_.at(nid).push_back(task_id);
+            } 
+          }
+        }
+      }
+    }
+
+
+    inline void FindTaskSplitNode(const std::vector<int> &qexpand,RegTree *tree){
+      std::vector<std::vector<float> > * task_gain_;
+      // first we need to claim which task gain we are using, task_gain_self_ or task_gain_all_ 
+      if (param_.use_task_gain_self==1){
+        task_gain_ = &task_gain_self_;
+      }
+      else{
+        task_gain_ = &task_gain_all_;
+      }
+      for (int nid : qexpand){
+         // we should set a param here to indicate which function we are using to make a task split decision
+
+         // 1. when there are some negative task split 
+        switch (param_.when_task_split) {
+        // TODO:
+        case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
+        case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        // case 1: CLIDumpModel(param); break;`
+        // case 2: CLIPredict(param); break;`
+        }
+      }
+    }
+
+    inline void ConductTaskSplit(const std::vector<int> &qexpand,RegTree *tree){
+
+
+      std::vector<std::vector<float> > * task_gain_;
+      // first we need to claim which task gain we are using, task_gain_self_ or task_gain_all_ 
+      if (param_.use_task_gain_self==1){
+        task_gain_ = &task_gain_self_;
+      }
+      else{
+        task_gain_ = &task_gain_all_;
+      }
+      // TODO:
+      switch (param_.how_task_split) {
+        case 0: HowTaskSplitHardMargin(task_gain_,qexpand); break;
+        }
     }
 
     inline void SimpleTaskGainSelfSplit(const std::vector<int> &qexpand,RegTree *tree,int successive_task_split, int min_task_gain){
@@ -1125,11 +1219,11 @@ class ColMaker: public TreeUpdater {
       auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
 
-      InitAuxiliary(num_row,num_node,qexpand_);
+      InitAuxiliary(num_row,num_node,qexpand);
       // std::cout<<"init aux"<<'\n';
 
       // /******************  assign nid,  task_id,  go_left  for each inst *******************/
-      AssignTaskAndNid(p_tree,p_fmat,feat_set,qexpand_,num_node);
+      AssignTaskAndNid(p_tree,p_fmat,feat_set,qexpand,num_node);
       // for (int ind : inst_nid_){std::cout<<ind<<"\t";}
       // for (int ind : inst_task_id_){std::cout<<ind<<"\t";}
       // for (int ind : inst_go_left_){std::cout<<ind<<"\t";}
@@ -1138,26 +1232,34 @@ class ColMaker: public TreeUpdater {
       CalcGHInNode(num_row,gpair);
 
       /************* calculate task_gain_self and task_gain_self through the whole data********/
-      CalcTaskWStar(qexpand_);
-      CalcTaskGainSelf(qexpand_);
-      // CalcTaskGainAll(qexpand_);
-      CalcTaskGainAllLambdaWeighted(qexpand_);
+      CalcTaskWStar(qexpand);
+      CalcTaskGainSelf(qexpand);
+      // CalcTaskGainAll(qexpand);
+      CalcTaskGainAllLambdaWeighted(qexpand);
+
+      /******************  make the decision whether make a task split or not   ****************/
+      // the results are updated in the is_task_node_
+      FindTaskSplitNode(qexpand,p_tree);
+      ConductTaskSplit(qexpand,p_tree);
+
+      // if (param_.task_split_flag==1){
+      //   ConductTaskSplit(qexpand,p_tree);
+      // }
 
       /******************  conduct task split based on the task_gain_all & sefl ****************/
-      bool task_split_flag=false;
+      // bool task_split_flag=false;
       // bool task_split_flag=true;
       
-      // int successive_task_split=0;  // do nothing 
-      int successive_task_split=1;  // the task split node's two child will not perform task split 
+      // // int successive_task_split=0;  // do nothing 
+      // // int successive_task_split=1;  // the task split node's two child will not perform task split 
       // int successive_task_split=2;     // the task split node's right child will not perform task split  
-      // bool successive_task_split=true;
-      int min_task_gain=0;
-      if (task_split_flag){
-        SimpleTaskGainAllSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
-        // SimpleTaskGainSelfSplit(qexpand_,p_tree,successive_task_split,min_task_gain);
-      }
+      // int min_task_gain=param_.min_task_gain;
+      // if (task_split_flag){
+      //   // SimpleTaskGainAllSplit(qexpand,p_tree,successive_task_split,min_task_gain);
+      //   SimpleTaskGainSelfSplit(qexpand,p_tree,successive_task_split,min_task_gain);
+      // }
 
-      // for (int nid : qexpand_){
+      // for (int nid : qexpand){
       //   for (int task_id : tasks_list_){
       //     // std::cout<<task_gain_self_.at(nid).at(task_id)<<"\t";
       //     std::cout<<task_gain_all_.at(nid).at(task_id)<<"\t";
@@ -1174,6 +1276,7 @@ class ColMaker: public TreeUpdater {
         // now we know the solution in snode[nid], set split
         if (e.best.loss_chg > kRtEps) {
           p_tree->AddChilds(nid);
+          // if (param_.task_split_flag==1){
           (*p_tree)[nid].SetSplitTask(e.best.SplitIndex(), 
                                     e.best.split_value,
                                     // left_tasks
@@ -1184,6 +1287,20 @@ class ColMaker: public TreeUpdater {
                                     is_task_node_.at(nid)
                                     // is_task_split
                                     );
+          // }
+          // else {
+          //   (*p_tree)[nid].SetSplitTask(e.best.SplitIndex(), 
+          //                             e.best.split_value,
+          //                             // left_tasks
+          //                             task_node_left_tasks_.at(nid),
+          //                             // right_tasks
+          //                             task_node_right_tasks_.at(nid),
+          //                             e.best.DefaultLeft(),
+          //                             false
+          //                             // is_task_split
+          //                             );
+          // }
+
 
           
           if (!is_task_node_.at(nid)){
@@ -1191,7 +1308,7 @@ class ColMaker: public TreeUpdater {
             (*p_tree)[(*p_tree)[nid].LeftChild()].SetLeaf(0.0f, 0);
             (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
           }
-          else{
+          else{//FIXME: why did i set a else here? 
             (*p_tree)[(*p_tree)[nid].LeftChild()].SetLeaf(0.0f, 0);
             (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
           }
