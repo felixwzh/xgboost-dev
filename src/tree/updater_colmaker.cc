@@ -79,6 +79,13 @@ class ColMaker: public TreeUpdater {
   struct ThreadEntry {
     /*! \brief statistics of data */
     TStats stats;
+    // the stats of one node contains the following:
+      // /*! \brief sum gradient statistics */
+      // double sum_grad;
+      // /*! \brief sum hessian statistics */
+      // double sum_hess;
+
+
     /*! \brief extra statistics of data */
     TStats stats_extra;
     /*! \brief last feature value scanned */
@@ -458,6 +465,13 @@ class ColMaker: public TreeUpdater {
         if (fvalue != e.last_fvalue &&
             e.stats.sum_hess >= param_.min_child_weight) {
           c.SetSubstract(snode_[nid].stats, e.stats);
+  // /*! \brief set current value to a - b */
+  // inline void SetSubstract(const GradStats& a, const GradStats& b) {
+  //   sum_grad = a.sum_grad - b.sum_grad;
+  //   sum_hess = a.sum_hess - b.sum_hess;
+  // }
+
+  // in a stats
           if (c.sum_hess >= param_.min_child_weight) {
             bst_float loss_chg;
             if (d_step == -1) {
@@ -490,7 +504,7 @@ class ColMaker: public TreeUpdater {
       const std::vector<int> &qexpand = qexpand_;
       // clear all the temp statistics
       for (auto nid : qexpand) {
-        temp[nid].stats.Clear();
+        temp[nid].stats.Clear();//FIXME: we must know what is temp, what is ThreadEntry
       }
       // left statistics
       TStats c(param_);
@@ -557,7 +571,7 @@ class ColMaker: public TreeUpdater {
           const bst_float delta = d_step == +1 ? gap: -gap;
           e.best.Update(loss_chg, fid, e.last_fvalue + delta, d_step == -1);
         }
-      }
+      }               
     }
 
     // enumerate the split values of specific feature
@@ -577,10 +591,10 @@ class ColMaker: public TreeUpdater {
       const std::vector<int> &qexpand = qexpand_;
       // clear all the temp statistics
       for (auto nid : qexpand) {
-        temp[nid].stats.Clear();
+        temp[nid].stats.Clear();  // for a new round computing for one specific feature at each node.
       }
       // left statistics
-      TStats c(param_);
+      TStats c(param_);// now I understand what does left means, it means the rest of the samples' statistics
       for (const ColBatch::Entry *it = begin; it != end; it += d_step) {
         const bst_uint ridx = it->index;
         const int nid = position_[ridx];
@@ -595,10 +609,10 @@ class ColMaker: public TreeUpdater {
           e.last_fvalue = fvalue;   
         } else {
           // try to find a split
-          if (fvalue != e.last_fvalue &&
+          if (fvalue != e.last_fvalue &&  // this condition ensures that the same fvalue comes continuelly will not make any difference.  
               e.stats.sum_hess >= param_.min_child_weight) {
-            c.SetSubstract(snode_[nid].stats, e.stats); 
-            if (c.sum_hess >= param_.min_child_weight) {
+            c.SetSubstract(snode_[nid].stats, e.stats);    // snode_[nid] is the (current) best result, compare to the result in this thread (feature)
+            if (c.sum_hess >= param_.min_child_weight) {  // the two '>= param_.min_child_weight' means the two child nodes' sum_hess should meet the constaint 
               bst_float loss_chg;
               if (d_step == -1) {
                 loss_chg = static_cast<bst_float>(
@@ -620,7 +634,7 @@ class ColMaker: public TreeUpdater {
         }
       }
       // finish updating all statistics, check if it is possible to include all sum statistics
-      for (int nid : qexpand) {
+      for (int nid : qexpand) {// TODO: don't understand the purpose here? did't we find the best result? 
         ThreadEntry &e = temp[nid];
         c.SetSubstract(snode_[nid].stats, e.stats);
         if (e.stats.sum_hess >= param_.min_child_weight &&
@@ -1054,122 +1068,53 @@ class ColMaker: public TreeUpdater {
       // TODO:
       switch (param_.how_task_split) {
         case 0: HowTaskSplitHardMargin(task_gain_,qexpand); break;
+        case 1：HowTaskSplitOneLevelForward(task_gain_,qexpand); break;
         }
     }
+    inline void 1：HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,const std::vector<int> &qexpand){
 
-    inline void SimpleTaskGainSelfSplit(const std::vector<int> &qexpand,RegTree *tree,int successive_task_split, int min_task_gain){
-      for (int nid : qexpand){
-        // check if there are negative gain in this node
-        bool all_positive_flag=true;
-        for (float task_gain : task_gain_self_.at(nid)){
-          // if ((task_gain-0)<1e-6){
-          if ((task_gain-0)<min_task_gain){ //FIXME:  FIX this hard margin here
-            
-            all_positive_flag=false;
-            break;
-          }
-        }
-
-        // is the parent is already a task split node, then the node will not perform task split.
-        if (successive_task_split == 1){
-          if (nid>0){
-            int p_ind = (*tree)[nid].Parent();
-              if (is_task_node_.at(p_ind)){
-                all_positive_flag=true;
-              }
-          }
-        }
-
-        if (successive_task_split==2){
-          if (nid>0){
-            int p_ind = (*tree)[nid].Parent();
-            int p_rchild_ind = (*tree)[nid].LeftChild();
-              if (is_task_node_.at(p_ind) && p_rchild_ind==nid){
-                all_positive_flag=true;
-              }
-          }
-        }
-        
-        // if all positive, then it is not a task split node
-        if (all_positive_flag){
-          is_task_node_.at(nid)=false;
-        }
-        // else this is a task split node, and we assign the task to left and right
-        else{
-          is_task_node_.at(nid)=true;
-          for (int task_id : tasks_list_){
-            if ((task_gain_self_.at(nid).at(task_id)-0)<1e-6) {
-            // if ((task_gain_self_.at(nid).at(task_id)-0)<min_task_gain) {
-              
-              task_node_left_tasks_.at(nid).push_back(task_id);
-              }
-            else{
-              task_node_right_tasks_.at(nid).push_back(task_id);
-            } 
-          }
-        }
-      }
-    }
-
-    inline void SimpleTaskGainAllSplit(const std::vector<int> &qexpand,RegTree *tree,int successive_task_split, int min_task_gain){
-      for (int nid : qexpand){
-        // check if there are negative gain in this node
-        bool all_positive_flag=true;
-        for (float task_gain : task_gain_all_.at(nid)){
-          // if ((task_gain-0)<1e-6){
-          if ((task_gain-0)<min_task_gain){ //FIXME:  FIX this hard margin here
-            
-            all_positive_flag=false;
-            break;
-          }
-        }
-
-        // is the parent is already a task split node, then the node will not perform task split.
-        if (successive_task_split == 1){ 
-          if (nid>0){
-            int p_ind = (*tree)[nid].Parent();
-              if (is_task_node_.at(p_ind)){
-                all_positive_flag=true;
-              }
-          }
-        }
-
-        // is the parent is already a task split node, then the right node will not perform task split.
-        if (successive_task_split==2){
-          
-          if (nid>0){
-            int p_ind = (*tree)[nid].Parent();
-              if (is_task_node_.at(p_ind) && !(*tree)[nid].IsLeftChild()){
-                // std::cout<<"miss the right node"<<"\n";
-                all_positive_flag=true;
-              }
-          }
-        }
-        
-
-        // if all positive, then it is not a task split node
-        if (all_positive_flag){
-          is_task_node_.at(nid)=false;
-        }
-        // else this is a task split node, and we assign the task to left and right
-        else{
-          is_task_node_.at(nid)=true;
-          for (int task_id : tasks_list_){
-            if ((task_gain_all_.at(nid).at(task_id)-0)<1e-6) {
-            // if ((task_gain_all_.at(nid).at(task_id)-0)<min_task_gain) {
-              
-              task_node_left_tasks_.at(nid).push_back(task_id);
-              }
-            else{
-              task_node_right_tasks_.at(nid).push_back(task_id);
-            } 
-          }
-        }
-      }
-    }
-    
+      // 1. construc the specific value to make such task split. 
       
-    
+      // 2. sort the tasks in each node
+
+      // 3. init several vals used here
+          //3.1 reserve space for the std::vector< std::vector<ThreadEntry> > task_stemp_; for we will node to 
+          //3.2 best one_level_forward (OLF) gain for each task node
+          //3.3 best left_tasks & right_tasks for each task node
+          //3.4 a nid vector for each inst, this should also be updated after each round
+          //3.5 a nid indexed dict used to indicate whether this node will be considered into the best split searching or not. 
+          //    note that there should be two kinds of nid should be set apart. the first one is those feature split node, and 
+          //    the second one is such node that in this round, there is no more task can be used to move from right to left
+          //    ( or we can implement it as if the moved task is actually empty, which could be obtained by sum node_task_inst_num_left_ 
+          //    and node_task_inst_num_right_ together )    
+      // 4. find the best split for the child nodes, one task move at each time
+          // while there is remaining tasks to be moved from right to left (loop) 
+
+          // 4.1 move one task from right to left, update the ind_ridx vector, if the task is actually empty, we nid to set a flag to that nid
+
+          // 4.2 go through the whole dataframe, drop those whose nid flag is false, find the best split gain
+
+          // 4.3 find the OLF gain and update it
+
+          // end loop
+
+      // 5. get the best OLF for each node, and find the best left tasks & right tasks.  
+
+      // for (int nid : qexpand){
+      //   if (is_task_node_.at(nid)){
+      //     for (int task_id : tasks_list_){
+      //       if ((task_gain_->at(nid).at(task_id)-0)<param_.task_gain_margin) {
+      //         task_node_left_tasks_.at(nid).push_back(task_id);
+      //         }
+      //       else{
+      //         task_node_right_tasks_.at(nid).push_back(task_id);
+      //       } 
+      //     }
+      //   }
+      // }
+    }
+
+
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
                           const std::vector<int> &qexpand,
@@ -1468,7 +1413,13 @@ class ColMaker: public TreeUpdater {
     // Instance Data: current node position in the tree of each instance
     std::vector<int> position_;
     // PerThread x PerTreeNode: statistics for per thread construction
-    std::vector< std::vector<ThreadEntry> > stemp_;
+    std::vector< std::vector<ThreadEntry> > stemp_;  //FIXME: this is important, we shoud check how it works. 
+    // in this stemp_, each element is a vector for one thread. and this also means each thread is computing just one feature of the data.
+    // then in the std::vector<ThreadEntry>, each Entry is just for one split node (expand_ node here)
+    // the results of the best split gain and split condition is saved in this function. 
+
+
+
     /*! \brief TreeNode Data: statistics for each constructed node */
     std::vector<NodeEntry> snode_;
     /*! \brief queue of nodes to be expanded */
@@ -1530,8 +1481,24 @@ class ColMaker: public TreeUpdater {
     std::vector<std::vector<int> > node_task_inst_num_right_;
     std::vector<int> node_inst_num_left_;
     std::vector<int> node_inst_num_right_;
-    
 
+    /****************************** auxiliary val for 1-4 gain compute***********************************/
+    // TODO:
+    /* 
+    * 1. note that we only conduct sucn 1-4 task split on the task split node already been determined to do task split.
+    * 2. but we can also use this 1-4 gain to do the when to split task, todo.
+    *  
+    */
+    // std::vector< std::vector<ThreadEntry> > stemp_ // FIXME:  find out when and how is stemp_ init. 
+    //
+    std::vector< std::vector<ThreadEntry> > task_stemp_;
+
+    // the nid of each inst, note that the nid means the child node (left & right)
+    std::vector<int> inst_nid_;
+
+    
+    
+    
 
 
     
