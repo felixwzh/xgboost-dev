@@ -31,6 +31,9 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   // // use to indicate whether we will conduct task split or not, if yes, =1
   // int task_split_flag; //FIXME: not work
 
+  // this is used to indicate which value is used to perform OLF split;
+  int which_task_value;
+
   // the max negative sample ratio to determine when to do task split.
   float max_neg_sample_ratio;
 
@@ -111,7 +114,10 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
     // DMLC_DECLARE_FIELD(task_split_flag)
     //     .set_default(1)
     //     .describe("use to indicate whether we will conduct task split or not, if yes, =1."); //FIXME: not work
-
+    DMLC_DECLARE_FIELD(which_task_value)
+        .set_default(0)
+        .describe("this is used to indicate which value is used to perform OLF split.");
+    
     DMLC_DECLARE_FIELD(max_neg_sample_ratio)
         .set_range(0.0f, 1.0f)
         .set_default(0.3f)

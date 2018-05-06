@@ -35,6 +35,7 @@
 #include <memory>
 #include <vector>
 #include <cmath>
+#include <map>
 #include <algorithm>
 #include "./param.h"
 #include "../common/random.h"
@@ -98,6 +99,12 @@ class ColMaker: public TreeUpdater {
     explicit ThreadEntry(const TrainParam &param)
         : stats(param), stats_extra(param) {
     }
+    explicit ThreadEntry(const TrainParam &param, const float root_gain)
+        : stats(param), stats_extra(param) {
+          best.loss_chg=root_gain;
+    }
+    
+
   };
   struct NodeEntry {
     /*! \brief statics for node entry */
@@ -112,6 +119,11 @@ class ColMaker: public TreeUpdater {
     explicit NodeEntry(const TrainParam& param)
         : stats(param), root_gain(0.0f), weight(0.0f){
     }
+    explicit NodeEntry(const TrainParam& param, const float root_gain)
+        : stats(param), root_gain(root_gain), weight(0.0f){
+          best.loss_chg=root_gain;
+    }
+    
   };
   // actual builder that runs the algorithm
   class Builder {
@@ -658,6 +670,91 @@ class ColMaker: public TreeUpdater {
       }
     }
 
+
+
+    // enumerate the split values of specific feature
+    inline void EnumerateSplitTask(const ColBatch::Entry *begin,
+                               const ColBatch::Entry *end,
+                               int d_step,
+                               bst_uint fid,
+                               const std::vector<GradientPair> &gpair,
+                               const MetaInfo &info,
+                               std::vector<ThreadEntry> &temp,
+                               const std::vector<int> &qexpand,
+                               const std::vector<int> &position_task,
+                               const std::vector<bool> &sub_node_works) { // NOLINT(*)
+                               // TODO: this function might be useful, for 1->4 task split compare
+      
+      // clear all the temp statistics
+      for (auto nid : qexpand) {
+        temp[nid].stats.Clear();  // for a new round computing for one specific feature at each node.
+      }
+      // left statistics
+      TStats c(param_);// now I understand what does left means, it means the rest of the samples' statistics
+      for (const ColBatch::Entry *it = begin; it != end; it += d_step) {
+        const bst_uint ridx = it->index;
+        const int nid = position_task[ridx];
+        if (nid < 0) continue;
+        if (!sub_node_works.at(nid)) continue;
+        // start working
+        const bst_float fvalue = it->fvalue;
+        // get the statistics of nid
+        ThreadEntry &e = temp[nid];    
+        // test if first hit, this is fine, because we set 0 during init
+        if (e.stats.Empty()) { 
+          e.stats.Add(gpair, info, ridx);  
+          e.last_fvalue = fvalue;   
+        } else {
+          // try to find a split
+          if (fvalue != e.last_fvalue &&  // this condition ensures that the same fvalue comes continuelly will not make any difference.  
+              e.stats.sum_hess >= param_.min_child_weight) {
+            c.SetSubstract(snode_task_[nid].stats, e.stats);    // snode_task_[nid] is the (current) best result, compare to the result in this thread (feature)
+            if (c.sum_hess >= param_.min_child_weight) {  // the two '>= param_.min_child_weight' means the two child nodes' sum_hess should meet the constaint 
+              bst_float loss_chg;
+              if (d_step == -1) {
+                loss_chg = static_cast<bst_float>(
+                    constraints_task_[nid].CalcSplitGain( 
+                        param_, param_.monotone_constraints[fid], c, e.stats) -
+                    snode_task_[nid].root_gain); 
+              } else {
+                loss_chg = static_cast<bst_float>(
+                    constraints_task_[nid].CalcSplitGain(
+                        param_, param_.monotone_constraints[fid], e.stats, c) -
+                    snode_task_[nid].root_gain);
+              }
+              e.best.Update(loss_chg, fid, (fvalue + e.last_fvalue) * 0.5f, d_step == -1);
+            }
+          }
+          // update the statistics
+          e.stats.Add(gpair, info, ridx);
+          e.last_fvalue = fvalue;
+        }
+      }
+      // finish updating all statistics, check if it is possible to include all sum statistics
+      for (int nid : qexpand) {// TODO: don't understand the purpose here? did't we find the best result? 
+        ThreadEntry &e = temp[nid];
+        c.SetSubstract(snode_task_[nid].stats, e.stats);
+        if (e.stats.sum_hess >= param_.min_child_weight &&
+            c.sum_hess >= param_.min_child_weight) {
+          bst_float loss_chg;
+          if (d_step == -1) {
+            loss_chg = static_cast<bst_float>(
+                constraints_task_[nid].CalcSplitGain(
+                    param_, param_.monotone_constraints[fid], c, e.stats) -
+                snode_task_[nid].root_gain);
+          } else {
+            loss_chg = static_cast<bst_float>(
+                constraints_task_[nid].CalcSplitGain(
+                    param_, param_.monotone_constraints[fid], e.stats, c) -
+                snode_task_[nid].root_gain);
+          }
+          const bst_float gap = std::abs(e.last_fvalue) + kRtEps;
+          const bst_float delta = d_step == +1 ? gap: -gap;
+          e.best.Update(loss_chg, fid, e.last_fvalue + delta, d_step == -1);
+        }
+      }
+    }// TODO: double check!
+
     // update the solution candidate
     virtual void UpdateSolution(const ColBatch& batch,
                                 const std::vector<GradientPair>& gpair,
@@ -1054,7 +1151,11 @@ class ColMaker: public TreeUpdater {
       }
     }
 
-    inline void ConductTaskSplit(const std::vector<int> &qexpand,RegTree *tree){
+    inline void ConductTaskSplit(const std::vector<int> &qexpand,
+                                  RegTree *tree, 
+                                  DMatrix *p_fmat,
+                                  std::vector<bst_uint> feat_set,
+                                  const std::vector<GradientPair> &gpair){
 
 
       std::vector<std::vector<float> > * task_gain_;
@@ -1068,52 +1169,441 @@ class ColMaker: public TreeUpdater {
       // TODO:
       switch (param_.how_task_split) {
         case 0: HowTaskSplitHardMargin(task_gain_,qexpand); break;
-        case 1：HowTaskSplitOneLevelForward(task_gain_,qexpand); break;
+        case 1: HowTaskSplitOneLevelForward(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
         }
     }
-    inline void 1：HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,const std::vector<int> &qexpand){
-
-      // 1. construc the specific value to make such task split. 
+    
+    inline void HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,
+                                            const std::vector<int> &qexpand, 
+                                            //const 
+                                            DMatrix& fmat,
+                                            std::vector<bst_uint> feat_set,
+                                            const std::vector<GradientPair>& gpair){
+      auto num_row=fmat.Info().num_row_;
       
+      // stores the expand nid for task node and feature node
+      std::vector<int> task_expand;
+      std::vector<int> feature_expand;
+      task_expand.clear();
+      
+      
+      for (int nid : qexpand){
+        if (is_task_node_.at(nid)){
+          // std::cout<<nid<<"\t";
+          task_expand.push_back(nid);
+        }
+        else{
+          feature_expand.push_back(nid);
+        }
+      }
+
+
+      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
+      int num_node = (*biggest+1);
+
+      num_node_for_task_ = num_node;
+      // 1. construc the specific value to make such task split. // should be the value passed to this function
+      std::vector<std::vector<float> > * node_task_value;
+      switch(param_.which_task_value){
+        case 0: node_task_value = & task_w_; break; 
+        case 1: node_task_value = & task_gain_self_; break;
+        case 2: node_task_value = & task_gain_all_; break;
+      }
+
+      // the <int, float> pair is sorted by the second value. 
+      std::vector<std::vector<std::pair<int, float> > > node_task_value_map;
+      node_task_value_map.resize(num_node);
+      for (int nid : task_expand){
+        for (int task_id : tasks_list_){
+          node_task_value_map.at(nid).push_back(std::make_pair( task_id, (*node_task_value).at(nid).at(task_id) ) );
+        }
       // 2. sort the tasks in each node
+        std::sort(node_task_value_map.at(nid).begin(), node_task_value_map.at(nid).end() ,cmp);
+      }
+      
 
       // 3. init several vals used here
-          //3.1 reserve space for the std::vector< std::vector<ThreadEntry> > task_stemp_; for we will node to 
+          //3.1 reserve space for the std::vector< std::vector<ThreadEntry> > task_stemp_; for we will node to
+          // std::vector< std::vector<ThreadEntry> > task_stemp_;
+          /////////////////////////////////////
+          // task_stemp_.clear();
+          // task_stemp_.resize(nthread_, std::vector<ThreadEntry>());
+          // for (size_t i = 0; i < task_stemp_.size(); ++i) {
+          //   task_stemp_[i].clear(); task_stemp_[i].resize(num_node*2+2,ThreadEntry(param_));
+          // }//FIXME: not sure if the codes here work or not.
+          ///////////////////////////////////////
+
+          //3.25 the task split gain, we need to use it 
+
           //3.2 best one_level_forward (OLF) gain for each task node
+          std::vector<float> best_OLF_gain;
+          const float negative_infinity = -std::numeric_limits<float>::infinity();
+          best_OLF_gain.resize(num_node,negative_infinity);
           //3.3 best left_tasks & right_tasks for each task node
+          std::vector<std::vector<int> > task_node_left_tasks_best;
+          std::vector<std::vector<int> > task_node_right_tasks_best;
+          task_node_left_tasks_best.resize(num_node);
+          task_node_right_tasks_best.resize(num_node);
+          // for (int nid : task_expand){
+          //     // TODO: should we resize and make the new vec for each node at each point?
+          // }
+
           //3.4 a nid vector for each inst, this should also be updated after each round
+          // for the task node nid x, we set the tmp left child nid as 2x-1, and the tmp right nid as 2x
+          std::vector<int> position_task;
+          position_task.resize(num_row,-1);
+
+          // // the nid of each inst
+          // // data_in
+          // inst_nid_.resize(num_row_,-1);
+          // // the task_id of each isnt
+          // inst_task_id_.resize(num_row_,-1);
+          // // whether the inst goes left (true) or right (false)
+          // inst_go_left_.resize(num_row_,true);
+
+
           //3.5 a nid indexed dict used to indicate whether this node will be considered into the best split searching or not. 
           //    note that there should be two kinds of nid should be set apart. the first one is those feature split node, and 
           //    the second one is such node that in this round, there is no more task can be used to move from right to left
           //    ( or we can implement it as if the moved task is actually empty, which could be obtained by sum node_task_inst_num_left_ 
-          //    and node_task_inst_num_right_ together )    
+          //    and node_task_inst_num_right_ together )
+          std::vector<bool> node_works;
+          node_works.resize(num_node,false);
+          
+
+          //3.6 a vector that stores the temp nid of each task at each nid
+          std::vector<std::vector<int> > sub_nid_of_task;
+          sub_nid_of_task.resize(num_node);
+
+          //3.7 the best node entry
+          // std::vector<NodeEntry> snode_task_;
+          // std::vector<TConstraint> constraints_task_
+          // /////////////////////////////////////////////////////////////////
+          // task_stemp_.clear();
+          // task_stemp_.resize(nthread_, std::vector<ThreadEntry>());
+          // for (size_t i = 0; i < task_stemp_.size(); ++i) {
+          //   task_stemp_[i].clear(); task_stemp_[i].reserve(num_node*2+2,ThreadEntry(param_));
+          // }//FIXME: not sure if the codes here work or not.
+
+
+          // snode_task.resize(num_node*2+2,NodeEntry(param_));
+          // constraints_task_.resize(num_node*2+2);
+          // const RowSet &rowset = fmat.BufferedRowset();
+          // const MetaInfo& info = fmat.Info();
+          // // setup position
+          // const auto ndata = static_cast<bst_omp_uint>(rowset.Size());
+          // #pragma omp parallel for schedule(static)
+          // for (bst_omp_uint i = 0; i < ndata; ++i) {
+          //   const bst_uint ridx = rowset[i];
+          //   const int tid = omp_get_thread_num();
+          //   if (position_[ridx] < 0) continue;
+          //   stemp_[tid][position_[ridx]].stats.Add(gpair, info, ridx);
+          // }
+
+
+          // ////////////////////////////////////////////////////////////////
+          for (int nid : task_expand){
+            node_works.at(nid)=true;
+
+            sub_nid_of_task.at(nid).resize(task_num_for_init_vec,-1);
+            for (int task_id : tasks_list_){
+              sub_nid_of_task.at(nid).at(task_id) = GetRightChildNid(nid);
+            }
+
+          }
+
+          //3.8 a sub nid indexed dict to indicate whether this sub nid is working
+          std::vector<bool> sub_node_works;
+          sub_node_works.resize(num_node*2+2,false);
+
+          // 3.9 stores the gain of each sub_nid
+          std::vector<float> sub_node_gain;
+          sub_node_gain.resize(num_node*2+2,0);
+
+
+          // 3.10 stores the G and H of each sub nid
+          std::vector<float> sub_node_G;
+          sub_node_G.resize(num_node*2+2,0);
+          std::vector<float> sub_node_H;
+          sub_node_H.resize(num_node*2+2,0);
+          for ( int nid : task_expand){
+            sub_node_G.at(GetRightChildNid(nid))=G_node_.at(nid);
+            sub_node_H.at(GetRightChildNid(nid))=H_node_.at(nid);
+          }
+
+          //3.11 stores the pre gain of each nid
+          std::vector<float> gain_nid;
+          gain_nid.resize(num_node,0);
+
+
+
+          
+
+          
+      dmlc::DataIter<ColBatch> *iter_task = fmat.ColIterator(feat_set);
+      const ColBatch &batch = iter_task->Value();
+      ColBatch::Inst col = batch[0];
+      const auto ndata = static_cast<bst_omp_uint>(col.length);
       // 4. find the best split for the child nodes, one task move at each time
-          // while there is remaining tasks to be moved from right to left (loop) 
+      for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
+      // for (int split_n =0;split_n <task_num_for_OLF;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
+      
+          //3.9 a sub nid set 
+          std::vector<int> sub_qexpand;
 
           // 4.1 move one task from right to left, update the ind_ridx vector, if the task is actually empty, we nid to set a flag to that nid
+          // update the sub_nid_of_task.
+          sub_qexpand.clear();
+          for (int nid : task_expand){
+            // remove one task from the right child to left.
+            int task_id = node_task_value_map.at(nid).at(split_n).first;
+            sub_nid_of_task.at(nid).at(task_id)=GetLeftChildNid(nid);
+            // if the moved task is empty at this node, then we will do nothing with this node.
+            if ( (node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<1 ){
+              node_works.at(nid)=false;
+              sub_node_works.at(GetLeftChildNid(nid))=false;
+              sub_node_works.at(GetRightChildNid(nid))=false;
+            }
+            else{
+              node_works.at(nid)=true;
+              // std::cout<<nid<<"\n";
+              sub_node_works.at(GetLeftChildNid(nid))=true;
+              sub_node_works.at(GetRightChildNid(nid))=true;
+              sub_qexpand.push_back(GetLeftChildNid(nid));
+              sub_qexpand.push_back(GetRightChildNid(nid));
 
-          // 4.2 go through the whole dataframe, drop those whose nid flag is false, find the best split gain
+            }
 
-          // 4.3 find the OLF gain and update it
+            // std::cout<<node_task_value_map.at(nid).at(split_n).second<<" value "<<split_n<<" split_n "<<task_id<<" task_id "<<nid<<" nid "<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id))<<"===\n";
+          }
+          // update the sub-nid for each inst
+          for (int ridx=0;ridx<num_row;ridx++){
+            int nid=inst_nid_.at(ridx);
+            int task_id=inst_task_id_.at(ridx);
+            if (is_task_node_.at(nid)){
+              position_task.at(ridx)=sub_nid_of_task.at(nid).at(task_id);
+            }
+          }
+
+
+          // 4.2 init some vals
+          /////////////////////////////////////////////////////////////////
+          task_stemp_.clear();
+          task_stemp_.resize(nthread_, std::vector<ThreadEntry>());
+          for (size_t i = 0; i < task_stemp_.size(); ++i) {
+            task_stemp_[i].clear(); task_stemp_[i].resize(num_node*2+2,ThreadEntry(param_,negative_infinity));
+          }//FIXME: not sure if the codes here work or not.
+
+
+          snode_task_.clear(); // important!
+          snode_task_.resize(num_node*2+2,NodeEntry(param_,negative_infinity));
+          constraints_task_.resize(num_node*2+2);
+          const RowSet &rowset = fmat.BufferedRowset();
+          const MetaInfo& info = fmat.Info();
+          // setup position
+          const auto ndata = static_cast<bst_omp_uint>(rowset.Size());
+          #pragma omp parallel for schedule(static)
+          for (bst_omp_uint i = 0; i < ndata; ++i) {
+            const bst_uint ridx = rowset[i];
+            const int tid = omp_get_thread_num();
+            const int nid = position_task[ridx];
+            if (nid < 0) continue;
+            if (!sub_node_works.at(nid)) continue;
+            task_stemp_[tid][nid].stats.Add(gpair, info, ridx);
+          }
+          // sum the per thread statistics together
+          for (int nid : sub_qexpand) {
+            TStats stats(param_);
+            for (size_t tid = 0; tid < stemp_.size(); ++tid) {
+              stats.Add(task_stemp_[tid][nid].stats);
+            }
+            // update node statistics
+            snode_task_[nid].stats = stats;
+          }
+          // // setup constraints before calculating the weight
+          // for (int nid : sub_qexpand) {
+          //   // if (tree[nid].IsRoot()) continue; //FIXME: todo
+          //   if (nid%2==0)  const int pid = nid/2;
+          //   else const int pid = (nid+1)/2;  //FIXME: what is constraints!?
+          //   constraints_task_[pid].SetChild(param_, 0,
+          //                             snode_task_[GetLeftChildNid(pid)].stats,
+          //                             snode_task_[GetRightChildNid(pid)].stats,
+          //                             &constraints_task_[GetLeftChildNid(pid)],
+          //                             &constraints_task_[GetRightChildNid(pid)]);
+          // }// FIXME: the node number should be changed. 
+
+          // calculating the weights
+          for (int nid : sub_qexpand) {
+            snode_task_[nid].root_gain = static_cast<float>(
+                constraints_task_[nid].CalcGain(param_, snode_task_[nid].stats));
+            snode_task_[nid].weight = static_cast<float>(
+                constraints_task_[nid].CalcWeight(param_, snode_task_[nid].stats));
+          }
+
+
+
+          ////////////////////////////////////////////////////////////////
+
+          // 4.3 go through the whole dataframe, drop those whose nid flag is false, find the best split gain
+          // start enumeration
+          const auto nsize = static_cast<bst_omp_uint>(batch.size);   // nsize is the number of features, this means feature level parallel
+          #if defined(_OPENMP)
+          const int batch_size = std::max(static_cast<int>(nsize / this->nthread_ / 32), 1);
+          #endif
+          
+          #pragma omp parallel for schedule(dynamic, batch_size)
+          for (bst_omp_uint i = 0; i < nsize; ++i) {
+
+
+            const bst_uint fid = batch.col_index[i];
+            const int tid = omp_get_thread_num();
+            const ColBatch::Inst c = batch[i];
+            const bool ind = c.length != 0 && c.data[0].fvalue == c.data[c.length - 1].fvalue;
+            if (param_.NeedForwardSearch(fmat.GetColDensity(fid), ind)) {
+              this->EnumerateSplitTask(c.data, c.data + c.length, +1,
+                                  fid, gpair, info, task_stemp_[tid],sub_qexpand,position_task,sub_node_works);
+            }
+            if (param_.NeedBackwardSearch(fmat.GetColDensity(fid), ind)) {
+              this->EnumerateSplitTask(c.data + c.length - 1, c.data - 1, -1,
+                                  fid, gpair, info, task_stemp_[tid],sub_qexpand,position_task,sub_node_works);
+            }
+          }
+
+          this->SyncBestSolutionTask(sub_qexpand);
+          // for (int nid : sub_qexpand){
+          //   std::cout<<nid<<"\t"<<snode_task_[nid].best.loss_chg<<"\n";
+          // }
+
+          // 4.4 before we cal the whole OLF gain, we have to calcu the left child loss_chg and the right child loss_chg
+          // also we can calcu the whole loss_chg of root pid, then we have the final OLF gain,
+          // OLF gain = root loss_chg + // optional
+          //            left tasks gain + right tasks gain  // this will be done in this 4.4 section
+          //            left loss_chg + right loss // this is done in 4.3
+
+          //FIXME: 
+          // for (int nid : sub_qexpand){
+          //   int pid=-1;
+          //   if (nid%2==0)  pid = nid/2;
+          //   else  pid = (nid+1)/2; 
+          //   float G=0;
+          //   float H=0;
+          //   for (int task_id : tasks_list_){
+          //     if (sub_nid_of_task.at(pid).at(task_id) == nid){
+          //       G +=(G_task_lnode_.at(pid).at(task_id)+G_task_rnode_.at(pid).at(task_id));
+          //       H +=(H_task_lnode_.at(pid).at(task_id)+H_task_rnode_.at(pid).at(task_id));
+          //     }
+          //   }
+          //   std::cout<<G<<"\t"<<H<<"\n";
+
+          //   sub_node_gain.at(nid) = (G*G)/(H+param_.reg_lambda);
+          // }
+          for (int nid : task_expand){
+            int task_id = node_task_value_map.at(nid).at(split_n).first;
+
+            int left_nid=GetLeftChildNid(nid);
+            int right_nid=GetRightChildNid(nid);
+
+            sub_node_G.at(left_nid)+=(G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+            sub_node_H.at(left_nid)+=(H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+
+            sub_node_G.at(right_nid)-=(G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+            sub_node_H.at(right_nid)-=(H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+            // std::cout<<sub_node_G.at(left_nid)<<"\t"<<sub_node_H.at(left_nid)<<"\n";
+            // std::cout<<sub_node_G.at(right_nid)<<"\t"<<sub_node_H.at(right_nid)<<"\n";
+            float left_gain = (sub_node_G.at(left_nid)*sub_node_G.at(left_nid))/(sub_node_H.at(left_nid)+param_.reg_lambda);
+            float right_gain = (sub_node_G.at(right_nid)*sub_node_G.at(right_nid))/(sub_node_H.at(right_nid)+param_.reg_lambda);
+            float gain = ( (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) * (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) 
+                          / ( sub_node_H.at(left_nid) + sub_node_H.at(right_nid) + param_.reg_lambda  ) );
+            gain_nid.at(nid)=left_gain+right_gain-gain;
+            // std::cout<<gain_nid.at(nid)<<"\n";
+          }
+
+
+          // 4.5 find the OLF gain and update it
+          for (int nid : task_expand){
+            if (node_works.at(nid)){
+              float cur_OLF_gain=0;
+              int left_nid=GetLeftChildNid(nid);
+              int right_nid=GetRightChildNid(nid);
+              
+              cur_OLF_gain+=gain_nid.at(nid);
+              cur_OLF_gain+=snode_task_[left_nid].best.loss_chg;
+              cur_OLF_gain+=snode_task_[right_nid].best.loss_chg;
+              if (cur_OLF_gain>best_OLF_gain.at(nid)){
+                best_OLF_gain.at(nid) = cur_OLF_gain;
+                task_node_left_tasks_best.at(nid).clear();
+                task_node_right_tasks_best.at(nid).clear();
+                for (int task_id : tasks_list_){
+                  if (sub_nid_of_task.at(nid).at(task_id) == left_nid){
+                    task_node_left_tasks_best.at(nid).push_back(task_id);
+                  }
+                  else{
+                    task_node_right_tasks_best.at(nid).push_back(task_id);
+                  }
+                }
+
+              }
+              // std::cout<<gain_nid.at(nid)<<"\n";
+              // // std::cout<<snode_task_[left_nid].best.loss_chg+snode_task_[right_nid].best.loss_chg<<"\n";
+              // std::cout<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+
+            }
+          }
+
 
           // end loop
+      }
 
       // 5. get the best OLF for each node, and find the best left tasks & right tasks.  
+      for (int nid : task_expand){
+        for (int task_id : task_node_left_tasks_best.at(nid)){
+          task_node_left_tasks_.at(nid).push_back(task_id);
+        }
+        for (int task_id : task_node_right_tasks_best.at(nid)){
+          task_node_right_tasks_.at(nid).push_back(task_id);
+        }
+      }
 
-      // for (int nid : qexpand){
-      //   if (is_task_node_.at(nid)){
-      //     for (int task_id : tasks_list_){
-      //       if ((task_gain_->at(nid).at(task_id)-0)<param_.task_gain_margin) {
-      //         task_node_left_tasks_.at(nid).push_back(task_id);
-      //         }
-      //       else{
-      //         task_node_right_tasks_.at(nid).push_back(task_id);
-      //       } 
-      //     }
-      //   }
-      // }
+
+
     }
 
+
+    static bool cmp(const std::pair<int, float>& x, const std::pair<int, float>& y)    
+    {    
+        return x.second < y.second;    
+    }  
+
+    inline int GetRightChildNid(const int nid){
+      return nid;
+    }
+    inline int GetLeftChildNid(const int nid){
+      return nid+num_node_for_task_;
+    }
+
+//TODO: this functions could be added later...
+/*        // is the parent is already a task split node, then the node will not perform task split. 
+        if (successive_task_split == 1){ 
+          if (nid>0){ 
+            int p_ind = (*tree)[nid].Parent(); 
+              if (is_task_node_.at(p_ind)){ 
+                all_positive_flag=true; 
+              } 
+          } 
+        }
+                if (successive_task_split==2){ 
+          if (nid>0){ 
+            int p_ind = (*tree)[nid].Parent(); 
+            int p_rchild_ind = (*tree)[nid].LeftChild(); 
+              if (is_task_node_.at(p_ind) && p_rchild_ind==nid){ 
+                all_positive_flag=true; 
+              } 
+          } 
+        } 
+        
+        
+        
+        */
 
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
@@ -1163,6 +1653,7 @@ class ColMaker: public TreeUpdater {
       auto num_row=p_fmat->Info().num_row_;
       auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
+      std::cout<<num_node<<"\n";
 
       InitAuxiliary(num_row,num_node,qexpand);
       // std::cout<<"init aux"<<'\n';
@@ -1185,10 +1676,10 @@ class ColMaker: public TreeUpdater {
       /******************  make the decision whether make a task split or not   ****************/
       // the results are updated in the is_task_node_
       FindTaskSplitNode(qexpand,p_tree);
-      ConductTaskSplit(qexpand,p_tree);
+      ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);
 
       // if (param_.task_split_flag==1){
-      //   ConductTaskSplit(qexpand,p_tree);
+      //   ConductTaskSpl it(qexpand,p_tree);
       // }
 
       /******************  conduct task split based on the task_gain_all & sefl ****************/
@@ -1306,6 +1797,15 @@ class ColMaker: public TreeUpdater {
         NodeEntry &e = snode_[nid];
         for (int tid = 0; tid < this->nthread_; ++tid) {
           e.best.Update(stemp_[tid][nid].best);
+        }
+      }
+    }
+     // synchronize the best solution of each node
+    virtual void SyncBestSolutionTask(const std::vector<int> &qexpand) {
+      for (int nid : qexpand) {
+        NodeEntry &e = snode_task_[nid];
+        for (int tid = 0; tid < this->nthread_; ++tid) {
+          e.best.Update(task_stemp_[tid][nid].best);
         }
       }
     }
@@ -1434,6 +1934,8 @@ class ColMaker: public TreeUpdater {
     // 
     const std::vector<int> tasks_list_{1, 2, 4, 5, 6, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
     const int task_num_for_init_vec=30;
+    const int task_num_for_OLF=21;
+    
 
     // the nid of each inst
     std::vector<int> inst_nid_;
@@ -1493,10 +1995,14 @@ class ColMaker: public TreeUpdater {
     //
     std::vector< std::vector<ThreadEntry> > task_stemp_;
 
-    // the nid of each inst, note that the nid means the child node (left & right)
-    std::vector<int> inst_nid_;
+    // t
+    std::vector<NodeEntry> snode_task_;
 
-    
+    //
+    std::vector<TConstraint> constraints_task_;
+
+    //
+    int num_node_for_task_;
     
     
 
