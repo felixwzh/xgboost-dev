@@ -17,7 +17,7 @@
  * -----9.-add some criteria to make task split in a normalized and non-sensitive way. from Yanru Qu
  * 13. compare the loss, but not the AUC. in the result
  * 12. tune the parameter on validation set, instead of test set.
- * 2. add the function of 1-4 split comparing
+ * -----2.-add the function of 1-4 split comparing
  * 5. add a fucntion to do w* split with 1-4 task split comparing
  * 8. use the positive ratio as a split metric, baseline model
  */
@@ -694,10 +694,12 @@ class ColMaker: public TreeUpdater {
       for (const ColBatch::Entry *it = begin; it != end; it += d_step) {
         const bst_uint ridx = it->index;
         const int nid = position_task[ridx];
+        
         if (nid < 0) continue;
         if (!sub_node_works.at(nid)) continue;
         // start working
         const bst_float fvalue = it->fvalue;
+
         // get the statistics of nid
         ThreadEntry &e = temp[nid];    
         // test if first hit, this is fine, because we set 0 during init
@@ -706,10 +708,11 @@ class ColMaker: public TreeUpdater {
           e.last_fvalue = fvalue;   
         } else {
           // try to find a split
-          if (fvalue != e.last_fvalue &&  // this condition ensures that the same fvalue comes continuelly will not make any difference.  
-              e.stats.sum_hess >= param_.min_child_weight) {
+          if (fvalue != e.last_fvalue // this condition ensures that the same fvalue comes continuelly will not make any difference.  
+              // &&   e.stats.sum_hess >= param_.min_child_weight  //FIXME: need to delete this, otherwise the sesult will be weird
+              ) {
             c.SetSubstract(snode_task_[nid].stats, e.stats);    // snode_task_[nid] is the (current) best result, compare to the result in this thread (feature)
-            if (c.sum_hess >= param_.min_child_weight) {  // the two '>= param_.min_child_weight' means the two child nodes' sum_hess should meet the constaint 
+            //if (c.sum_hess >= param_.min_child_weight) {  // the two '>= param_.min_child_weight' means the two child nodes' sum_hess should meet the constaint 
               bst_float loss_chg;
               if (d_step == -1) {
                 loss_chg = static_cast<bst_float>(
@@ -723,7 +726,7 @@ class ColMaker: public TreeUpdater {
                     snode_task_[nid].root_gain);
               }
               e.best.Update(loss_chg, fid, (fvalue + e.last_fvalue) * 0.5f, d_step == -1);
-            }
+            //}
           }
           // update the statistics
           e.stats.Add(gpair, info, ridx);
@@ -734,8 +737,7 @@ class ColMaker: public TreeUpdater {
       for (int nid : qexpand) {// TODO: don't understand the purpose here? did't we find the best result? 
         ThreadEntry &e = temp[nid];
         c.SetSubstract(snode_task_[nid].stats, e.stats);
-        if (e.stats.sum_hess >= param_.min_child_weight &&
-            c.sum_hess >= param_.min_child_weight) {
+        //if (e.stats.sum_hess >= param_.min_child_weight && c.sum_hess >= param_.min_child_weight) {
           bst_float loss_chg;
           if (d_step == -1) {
             loss_chg = static_cast<bst_float>(
@@ -751,7 +753,7 @@ class ColMaker: public TreeUpdater {
           const bst_float gap = std::abs(e.last_fvalue) + kRtEps;
           const bst_float delta = d_step == +1 ? gap: -gap;
           e.best.Update(loss_chg, fid, e.last_fvalue + delta, d_step == -1);
-        }
+        //}
       }
     }// TODO: double check!
 
@@ -1156,6 +1158,7 @@ class ColMaker: public TreeUpdater {
                                   DMatrix *p_fmat,
                                   std::vector<bst_uint> feat_set,
                                   const std::vector<GradientPair> &gpair){
+                                    
 
 
       std::vector<std::vector<float> > * task_gain_;
@@ -1172,13 +1175,31 @@ class ColMaker: public TreeUpdater {
         case 1: HowTaskSplitOneLevelForward(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
         }
     }
-    
+
     inline void HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,
                                             const std::vector<int> &qexpand, 
                                             //const 
                                             DMatrix& fmat,
                                             std::vector<bst_uint> feat_set,
                                             const std::vector<GradientPair>& gpair){
+
+      // before we conduct the task split things, we should make those node with only one task apart.
+      for (int nid : qexpand){
+        if (is_task_node_.at(nid)){
+          int pos_num_task=0;
+          for (int task_id : tasks_list_ ){
+            if ( (node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )>0){
+              pos_num_task+=1;
+            } 
+          }
+          if (pos_num_task<2){
+            is_task_node_.at(nid)=false;
+          }
+        }
+      }
+      
+
+                                               
       auto num_row=fmat.Info().num_row_;
       
       // stores the expand nid for task node and feature node
@@ -1189,7 +1210,6 @@ class ColMaker: public TreeUpdater {
       
       for (int nid : qexpand){
         if (is_task_node_.at(nid)){
-          // std::cout<<nid<<"\t";
           task_expand.push_back(nid);
         }
         else{
@@ -1239,6 +1259,7 @@ class ColMaker: public TreeUpdater {
           std::vector<float> best_OLF_gain;
           const float negative_infinity = -std::numeric_limits<float>::infinity();
           best_OLF_gain.resize(num_node,negative_infinity);
+
           //3.3 best left_tasks & right_tasks for each task node
           std::vector<std::vector<int> > task_node_left_tasks_best;
           std::vector<std::vector<int> > task_node_right_tasks_best;
@@ -1252,6 +1273,7 @@ class ColMaker: public TreeUpdater {
           // for the task node nid x, we set the tmp left child nid as 2x-1, and the tmp right nid as 2x
           std::vector<int> position_task;
           position_task.resize(num_row,-1);
+          
 
           // // the nid of each inst
           // // data_in
@@ -1339,7 +1361,6 @@ class ColMaker: public TreeUpdater {
 
           
 
-          
       dmlc::DataIter<ColBatch> *iter_task = fmat.ColIterator(feat_set);
       const ColBatch &batch = iter_task->Value();
       ColBatch::Inst col = batch[0];
@@ -1348,6 +1369,8 @@ class ColMaker: public TreeUpdater {
       for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       // for (int split_n =0;split_n <task_num_for_OLF;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       
+      //TODO:
+      nu_77=0;
           //3.9 a sub nid set 
           std::vector<int> sub_qexpand;
 
@@ -1366,7 +1389,6 @@ class ColMaker: public TreeUpdater {
             }
             else{
               node_works.at(nid)=true;
-              // std::cout<<nid<<"\n";
               sub_node_works.at(GetLeftChildNid(nid))=true;
               sub_node_works.at(GetRightChildNid(nid))=true;
               sub_qexpand.push_back(GetLeftChildNid(nid));
@@ -1468,6 +1490,7 @@ class ColMaker: public TreeUpdater {
                                   fid, gpair, info, task_stemp_[tid],sub_qexpand,position_task,sub_node_works);
             }
           }
+          
 
           this->SyncBestSolutionTask(sub_qexpand);
           // for (int nid : sub_qexpand){
@@ -1529,6 +1552,11 @@ class ColMaker: public TreeUpdater {
               cur_OLF_gain+=gain_nid.at(nid);
               cur_OLF_gain+=snode_task_[left_nid].best.loss_chg;
               cur_OLF_gain+=snode_task_[right_nid].best.loss_chg;
+
+              // if (nid==77){
+              //   std::cout<<snode_task_[left_nid].best.loss_chg<<" "<<snode_task_[right_nid].best.loss_chg<<"  "<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+              // }
+
               if (cur_OLF_gain>best_OLF_gain.at(nid)){
                 best_OLF_gain.at(nid) = cur_OLF_gain;
                 task_node_left_tasks_best.at(nid).clear();
@@ -1541,6 +1569,10 @@ class ColMaker: public TreeUpdater {
                     task_node_right_tasks_best.at(nid).push_back(task_id);
                   }
                 }
+                // if (nid==77){
+                //   std::cout<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+                //   std::cout<<task_node_left_tasks_best.at(nid).size()<<" "<<task_node_right_tasks_best.at(nid).size()<<"\n";
+                // }
 
               }
               // std::cout<<gain_nid.at(nid)<<"\n";
@@ -1556,15 +1588,30 @@ class ColMaker: public TreeUpdater {
 
       // 5. get the best OLF for each node, and find the best left tasks & right tasks.  
       for (int nid : task_expand){
+        task_node_left_tasks_.at(nid).clear();
+        task_node_right_tasks_.at(nid).clear();
+        // if (nid==28){
+        //           // std::cout<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+        //           std::cout<<task_node_left_tasks_best.at(nid).size()<<" "<<task_node_right_tasks_best.at(nid).size()<<"\n";
+        //         }
+        
         for (int task_id : task_node_left_tasks_best.at(nid)){
           task_node_left_tasks_.at(nid).push_back(task_id);
         }
         for (int task_id : task_node_right_tasks_best.at(nid)){
           task_node_right_tasks_.at(nid).push_back(task_id);
         }
+        // if (task_node_left_tasks_.at(nid).size()==0){
+        //   for (int ii =0; ii<21; ++ii){
+        //         int task_id = node_task_value_map.at(nid).at(ii).first;
+        //   std::cout<<node_task_value_map.at(nid).at(ii).first<<"\t"<<node_task_value_map.at(nid).at(ii).second<<"\t"<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<<"\n";
+         
+        //   }
+        //   std::cout<<nid<<"sdfg\n";
+        // std::cout<<task_node_left_tasks_.at(nid).size()<<" "<<task_node_right_tasks_.at(nid).size()<<"\n";
+        
+        // }
       }
-
-
 
     }
 
@@ -1653,7 +1700,7 @@ class ColMaker: public TreeUpdater {
       auto num_row=p_fmat->Info().num_row_;
       auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
-      std::cout<<num_node<<"\n";
+      // std::cout<<num_node<<"\n";
 
       InitAuxiliary(num_row,num_node,qexpand);
       // std::cout<<"init aux"<<'\n';
@@ -1676,7 +1723,13 @@ class ColMaker: public TreeUpdater {
       /******************  make the decision whether make a task split or not   ****************/
       // the results are updated in the is_task_node_
       FindTaskSplitNode(qexpand,p_tree);
-      ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);
+      for (int nid : qexpand){
+        if (is_task_node_.at(nid)){
+          ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);
+          break;
+        }
+      }
+      
 
       // if (param_.task_split_flag==1){
       //   ConductTaskSpl it(qexpand,p_tree);
@@ -2003,7 +2056,7 @@ class ColMaker: public TreeUpdater {
 
     //
     int num_node_for_task_;
-    
+
     
 
 
