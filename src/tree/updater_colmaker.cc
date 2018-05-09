@@ -15,11 +15,17 @@
  * -----7.-test the result in test data, and make prediction on every center.
  * -----11.-seperate the when and how function, first generate the task split node, then generate the best left tasks, and best right tasks
  * -----9.-add some criteria to make task split in a normalized and non-sensitive way. from Yanru Qu
- * 13. compare the loss, but not the AUC. in the result
- * 12. tune the parameter on validation set, instead of test set.
  * -----2.-add the function of 1-4 split comparing
- * 5. add a fucntion to do w* split with 1-4 task split comparing
- * 8. use the positive ratio as a split metric, baseline model
+ * -----13.-compare the loss, but not the AUC. in the result
+ * -----5.-add a fucntion to do w* split with 1-4 task split comparing
+ * -----15.-set bash param for py training
+ * 12. tune the parameter on validation set, instead of test set.
+ * 8.  use the positive ratio as a split metric, baseline model
+ * 14. communicate with guoxin and talk about the kdd baselien model
+ * 16. the OLF loss might be wrong, review it
+ * 17. add some more when and how split functions
+ * 
+ * 
  */
 
 /* FIXME: here are some problems tobe solved
@@ -1183,20 +1189,7 @@ class ColMaker: public TreeUpdater {
                                             std::vector<bst_uint> feat_set,
                                             const std::vector<GradientPair>& gpair){
 
-      // before we conduct the task split things, we should make those node with only one task apart.
-      for (int nid : qexpand){
-        if (is_task_node_.at(nid)){
-          int pos_num_task=0;
-          for (int task_id : tasks_list_ ){
-            if ( (node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )>0){
-              pos_num_task+=1;
-            } 
-          }
-          if (pos_num_task<2){
-            is_task_node_.at(nid)=false;
-          }
-        }
-      }
+      
       
 
                                                
@@ -1204,7 +1197,7 @@ class ColMaker: public TreeUpdater {
       
       // stores the expand nid for task node and feature node
       std::vector<int> task_expand;
-      std::vector<int> feature_expand;
+      // std::vector<int> feature_expand;
       task_expand.clear();
       
       
@@ -1212,16 +1205,18 @@ class ColMaker: public TreeUpdater {
         if (is_task_node_.at(nid)){
           task_expand.push_back(nid);
         }
-        else{
-          feature_expand.push_back(nid);
-        }
+        // else{
+        //   feature_expand.push_back(nid);
+        // }
       }
-
+  
 
       auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
 
       num_node_for_task_ = num_node;
+      // std::cout<<num_node_for_task_<<"\t";
+
       // 1. construc the specific value to make such task split. // should be the value passed to this function
       std::vector<std::vector<float> > * node_task_value;
       switch(param_.which_task_value){
@@ -1239,7 +1234,7 @@ class ColMaker: public TreeUpdater {
         }
       // 2. sort the tasks in each node
         std::sort(node_task_value_map.at(nid).begin(), node_task_value_map.at(nid).end() ,cmp);
-      }
+      } 
       
 
       // 3. init several vals used here
@@ -1369,8 +1364,6 @@ class ColMaker: public TreeUpdater {
       for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       // for (int split_n =0;split_n <task_num_for_OLF;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       
-      //TODO:
-      nu_77=0;
           //3.9 a sub nid set 
           std::vector<int> sub_qexpand;
 
@@ -1403,7 +1396,9 @@ class ColMaker: public TreeUpdater {
             int nid=inst_nid_.at(ridx);
             int task_id=inst_task_id_.at(ridx);
             if (is_task_node_.at(nid)){
-              position_task.at(ridx)=sub_nid_of_task.at(nid).at(task_id);
+              // position_task.at(ridx)=sub_nid_of_task.at(nid).at(task_id);  //FIXME: the bug is here. needs fix (20180508)
+              int tmp=sub_nid_of_task.at(nid).at(task_id);
+              position_task.at(ridx)= tmp;
             }
           }
 
@@ -1531,14 +1526,11 @@ class ColMaker: public TreeUpdater {
 
             sub_node_G.at(right_nid)-=(G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
             sub_node_H.at(right_nid)-=(H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
-            // std::cout<<sub_node_G.at(left_nid)<<"\t"<<sub_node_H.at(left_nid)<<"\n";
-            // std::cout<<sub_node_G.at(right_nid)<<"\t"<<sub_node_H.at(right_nid)<<"\n";
             float left_gain = (sub_node_G.at(left_nid)*sub_node_G.at(left_nid))/(sub_node_H.at(left_nid)+param_.reg_lambda);
             float right_gain = (sub_node_G.at(right_nid)*sub_node_G.at(right_nid))/(sub_node_H.at(right_nid)+param_.reg_lambda);
             float gain = ( (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) * (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) 
                           / ( sub_node_H.at(left_nid) + sub_node_H.at(right_nid) + param_.reg_lambda  ) );
             gain_nid.at(nid)=left_gain+right_gain-gain;
-            // std::cout<<gain_nid.at(nid)<<"\n";
           }
 
 
@@ -1723,6 +1715,23 @@ class ColMaker: public TreeUpdater {
       /******************  make the decision whether make a task split or not   ****************/
       // the results are updated in the is_task_node_
       FindTaskSplitNode(qexpand,p_tree);
+
+
+      // before we conduct the task split things, we should make those node with only one task apart.
+      for (int nid : qexpand){
+        if (is_task_node_.at(nid)){
+          int pos_num_task=0;
+          for (int task_id : tasks_list_ ){
+            if ( (node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )>0){
+              pos_num_task+=1;
+            } 
+          }
+          if (pos_num_task<2){
+            is_task_node_.at(nid)=false;
+          }
+        }
+      }
+
       for (int nid : qexpand){
         if (is_task_node_.at(nid)){
           ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);
@@ -2058,7 +2067,7 @@ class ColMaker: public TreeUpdater {
     int num_node_for_task_;
 
     
-
+ 
 
     
     
