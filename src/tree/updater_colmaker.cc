@@ -20,18 +20,26 @@
  * -----5.-add a fucntion to do w* split with 1-4 task split comparing
  * -----15.-set bash param for py training
  * 12. tune the parameter on validation set, instead of test set.
+ * 
  * 8.  use the positive ratio as a split metric, baseline model
+ * 
  * 14. communicate with guoxin and talk about the kdd baselien model
  * 16. the OLF loss might be wrong, review it
  * 17. add some more when and how split functions
+ * 18. check whether IsTaskNode() works or not
+ * 19. make sure the task feature are added each time
+ * 20. output the results with some fixed beginning
+ * 21. check the difference between OFL gain and feature gain
+ * 22. consider the last value in OLF split, we should omit the tasks with the same task value when propose a possible task split point
+ * 
  * 
  * 
  */
 
 /* FIXME: here are some problems tobe solved
  * 1. should we calculate task spilt gain in with many other param? like the beta and gamma...
- * 2. 
- * 
+ * 2. the w* is calculated correctly, needs fix! FIXME:
+ * 3. the calculation of task gain all is not stable, fix it.
  * 
  *   
  */
@@ -48,6 +56,7 @@
 #include "../common/bitmap.h"
 #include "../common/sync.h"
 #include <iostream>
+#include <random>
 
 namespace xgboost {
 namespace tree {
@@ -140,10 +149,71 @@ class ColMaker: public TreeUpdater {
     virtual void Update(const std::vector<GradientPair>& gpair,
                         DMatrix* p_fmat,
                         RegTree* p_tree) {
+      srand(param_.baseline_seed);
       this->InitData(gpair, *p_fmat, *p_tree);
       this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
       for (int depth = 0; depth < param_.max_depth; ++depth) {
         this->FindSplit(depth, qexpand_, gpair, p_fmat, p_tree);
+
+if (param_.debug == 5){
+          if (qexpand_.size() == 0) break;
+        for (int nid : qexpand_){
+              std::cout<<"\n"<<nid<<": \t"<<node_inst_num_left_.at(nid)+node_inst_num_right_.at(nid)<<"="<<node_inst_num_.at(nid)<<"\t";
+              int tmp=0;
+          for (int task_id : tasks_list_){
+            if (task_gain_all_.at(nid).at(task_id)!=0){
+              std::cout<<task_id<<"("<<task_gain_all_.at(nid).at(task_id)<<","<<node_task_inst_num_left_.at(nid).at(task_id)<<"+"<<node_task_inst_num_right_.at(nid).at(task_id)<<")\t";
+            }
+            // else{
+            //   std::cout<<task_id<<"("<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id))<<")\t";
+            // }
+            tmp+=(node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id));
+            
+          }
+          std::cout<<"\t!!"<<tmp;
+
+
+        // std::cout<<nid<<"("<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
+          // if (!(*p_tree)[nid].IsLeaf() ) {
+          //   if (is_task_node_.at(nid)){
+
+          // std::cout<<nid<<"*("<<(*p_tree)[nid].LeftChild()<<","<<(*p_tree)[nid].RightChild()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
+          //   }
+          //   else{
+          // std::cout<<nid<<"("<<(*p_tree)[nid].LeftChild()<<","<<(*p_tree)[nid].RightChild()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
+          //   }
+          
+          // }
+          // else{
+          //   std::cout<<nid<<"("<<(*p_tree)[nid].LeafValue()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
+          // }
+          
+          // if ((*p_tree)[nid].IsTaskNode()) {
+
+          //   if (nid==param_.nid_debug){
+          // if (is_task_node_.at(nid)){
+          //   std::cout<<nid<<"\nLeft:";
+          //   auto ltasks=(*p_tree)[nid].LeftTasks();
+          //   for (int id : ltasks) std::cout<<id<<'|'<<(node_task_inst_num_left_.at(nid).at(id)+node_task_inst_num_right_.at(nid).at(id))<<"\t";
+          //   std::cout<<"\nRight:";
+            
+          //   auto rtasks=(*p_tree)[nid].RightTasks();
+          //   for (int id : rtasks) std::cout<<id<<'|'<<(node_task_inst_num_left_.at(nid).at(id)+node_task_inst_num_right_.at(nid).at(id))<<"\t";
+          //   std::cout<<"\n=========================\n";
+            
+          // }else{
+          //   for (int task_id : tasks_list_){
+          //   std::cout<<task_id<<'|'<<(node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id))<<"\t";
+             
+          //   } std::cout<<"\n=========================\n";
+          // }
+
+          //   }
+
+        }
+        std::cout<<"\n========================\n";
+}
+
         this->ResetPosition(qexpand_, p_fmat, *p_tree);
         this->UpdateQueueExpand(*p_tree, &qexpand_);
         this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
@@ -814,9 +884,11 @@ class ColMaker: public TreeUpdater {
                                 const std::vector<int> &qexpand,
                                 const int num_node_){
 
-      std::vector<int> nid_split_index;
+      std::vector<bst_uint> nid_split_index;
+      nid_split_index.clear();
       nid_split_index.resize(num_node_,0);
-      std::vector<float> nid_split_cond;
+      std::vector<bst_float> nid_split_cond;
+      nid_split_cond.clear();
       nid_split_cond.resize(num_node_,0);
 
       std::vector<unsigned> fsplits;
@@ -826,6 +898,14 @@ class ColMaker: public TreeUpdater {
         nid_split_index.at(nid)=e.best.SplitIndex();
         nid_split_cond.at(nid)=e.best.split_value;
       }  
+
+
+      if (param_.debug==6){
+        for (int nid : qexpand){
+          std::cout<<nid<<":"<<nid_split_index.at(nid)<<"\t"<<nid_split_cond.at(nid)<<"\n";
+        }
+      }
+
       std::sort(fsplits.begin(), fsplits.end());
       fsplits.resize(std::unique(fsplits.begin(), fsplits.end()) - fsplits.begin());
 
@@ -838,13 +918,14 @@ class ColMaker: public TreeUpdater {
           ColBatch::Inst col = batch[i];
           const bst_uint fid = batch.col_index[i];
           const auto ndata = static_cast<bst_omp_uint>(col.length);
-          #pragma omp parallel for schedule(static)
+          // #pragma omp parallel for schedule(static)   // FIXME: the code here is wrong if we use OMP
           for (bst_omp_uint j = 0; j < ndata; ++j) {
             const bst_uint ridx = col[j].index;
             const int nid = DecodePosition(ridx);  // HINT: remember this mistake, don't trust the name of data
             inst_nid_.at(ridx)=nid;
             const bst_float fvalue = col[j].fvalue;
-            if (nid_split_index.at(nid) == fid) { 
+            if (nid_split_index.at(nid) == fid) {
+              node_inst_num_.at(nid)+=1; 
               if (fvalue < nid_split_cond.at(nid)) {
                 inst_go_left_.at(ridx)=true;
               } else {
@@ -877,12 +958,16 @@ class ColMaker: public TreeUpdater {
             const int nid = DecodePosition(ridx);
 
             inst_task_id_.at(ridx)=task_id;
-
+          
             if (inst_go_left_.at(ridx)){
               node_task_inst_num_left_.at(nid).at(task_id)+=1;
               node_inst_num_left_.at(nid)+=1;
             }
             else{
+              if (param_.debug==2){
+              // if (nid==216 || task_id==216)
+              std::cout<<nid<<"|"<<task_id<<"\t";
+            }
               node_task_inst_num_right_.at(nid).at(task_id)+=1;
               node_inst_num_right_.at(nid)+=1;
             }
@@ -899,11 +984,15 @@ class ColMaker: public TreeUpdater {
 
       // the nid of each inst
       // data_in
+      inst_nid_.clear();
       inst_nid_.resize(num_row_,-1);
       // the task_id of each isnt
+      inst_task_id_.clear();
       inst_task_id_.resize(num_row_,-1);
       // whether the inst goes left (true) or right (false)
+      inst_go_left_.clear();
       inst_go_left_.resize(num_row_,true);
+
 
       // G and H in capital means the sum of the G and H over all the instances
       // store the G and H in the node, in order to calculate w* for the whole node 
@@ -931,12 +1020,18 @@ class ColMaker: public TreeUpdater {
       task_gain_all_.resize(num_node_);
       node_task_inst_num_left_.resize(num_node_);
       node_task_inst_num_right_.resize(num_node_);
+
+      node_pos_ratio_.clear();
+      node_pos_ratio_.resize(num_node_,0);
+
       // store the left and right task task_idx for each task split node 
       task_node_left_tasks_.resize(num_node_);
       task_node_right_tasks_.resize(num_node_);
       
       node_inst_num_left_.resize(num_node_);
       node_inst_num_right_.resize(num_node_);
+      node_inst_num_.resize(num_node_);
+      node_task_pos_ratio_.resize(num_node_);
       
       // we can resize the tasks when needed. 
 
@@ -952,6 +1047,7 @@ class ColMaker: public TreeUpdater {
         task_w_.at(nid).resize(task_num_for_init_vec,-1);
         node_task_inst_num_left_.at(nid).resize(task_num_for_init_vec,-1);
         node_task_inst_num_right_.at(nid).resize(task_num_for_init_vec,-1);
+        node_task_pos_ratio_.at(nid).resize(task_num_for_init_vec,-1);
         for (int task_id : tasks_list_){
         
           G_task_lnode_.at(nid).at(task_id)=0;
@@ -964,6 +1060,7 @@ class ColMaker: public TreeUpdater {
 
           node_task_inst_num_left_.at(nid).at(task_id)=0;
           node_task_inst_num_right_.at(nid).at(task_id)=0;
+          node_task_pos_ratio_.at(nid).at(task_id)=0;
         }  
       }
 
@@ -1000,7 +1097,8 @@ class ColMaker: public TreeUpdater {
     inline void CalcTaskWStar(const std::vector<int> &qexpand){
       for (int nid : qexpand){
         for (int task_id : tasks_list_){
-          task_w_.at(nid).at(task_id)= -G_task_rnode_.at(nid).at(task_id) / (H_task_rnode_.at(nid).at(task_id) +param_.reg_lambda);        
+          task_w_.at(nid).at(task_id)= - ( G_task_rnode_.at(nid).at(task_id) + G_task_lnode_.at(nid).at(task_id)  ) / 
+                                       ( H_task_rnode_.at(nid).at(task_id) + H_task_lnode_.at(nid).at(task_id) + param_.reg_lambda);        
         }
       }
     }
@@ -1009,8 +1107,8 @@ class ColMaker: public TreeUpdater {
       for (int nid : qexpand){
         //TODO: should we follow the whole setting of xgboost? I mean the beta and gamma term if xgboost's gain calculation.
         for (int task_id : tasks_list_){
-          float gain_left= Square(G_task_lnode_.at(nid).at(task_id))/(H_task_lnode_.at(nid).at(task_id)+param_.reg_lambda);
-          float gain_right= Square(G_task_rnode_.at(nid).at(task_id))/(H_task_rnode_.at(nid).at(task_id)+param_.reg_lambda);
+          float gain_left= Square(G_task_lnode_.at(nid).at(task_id)) / (H_task_lnode_.at(nid).at(task_id)+param_.reg_lambda);
+          float gain_right= Square(G_task_rnode_.at(nid).at(task_id)) / (H_task_rnode_.at(nid).at(task_id)+param_.reg_lambda);
           float gain=Square(G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id))/
                     (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id)+param_.reg_lambda);
 
@@ -1086,7 +1184,7 @@ class ColMaker: public TreeUpdater {
           task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain;
         }
       }
-    }
+    }  // FIXME: the calculation of task gain all is not stable, fix it
 
 
     inline bool WhenTaskSplitHardMargin(std::vector<std::vector<float> > * task_gain_,int nid, float min_task_gain){
@@ -1106,9 +1204,16 @@ class ColMaker: public TreeUpdater {
       float task_gain =0;
       
       for (int task_id : tasks_list_){
-        task_gain = task_gain_->at(nid).at(task_id);
-        if (task_gain<0){
-          neg_task_gain_sample_num+=( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) );
+        // if (nid == param_.nid_debug){
+
+          task_gain = task_gain_->at(nid).at(task_id);
+          if (task_gain<0){
+            neg_task_gain_sample_num+=( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) );
+          }
+        if (nid == param_.nid_debug){
+          if (param_.debug==1){
+            std::cout<<task_id<<"\t"<<task_gain<<"\t"<<task_gain_->at(nid).at(task_id)<<"\t"<<( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )<<"\n";
+          }
         }
       }
 
@@ -1135,6 +1240,47 @@ class ColMaker: public TreeUpdater {
       }
     }
 
+    inline void CalPosRatio(const std::vector<int> &qexpand, 
+                                            //const 
+                                            DMatrix& fmat,
+                                            std::vector<bst_uint> feat_set){
+      // 1. calculate the pos ratio for each task on each node and also the node
+      std::vector<bst_float> inst_label = fmat.Info().labels_;
+      dmlc::DataIter<ColBatch> *iter_task = fmat.ColIterator(feat_set);
+      
+      // sum the pos num
+      while (iter_task->Next()) {  
+        const ColBatch &batch = iter_task->Value();
+          ColBatch::Inst col = batch[0];
+          const auto ndata = static_cast<bst_omp_uint>(col.length);
+          for (bst_omp_uint j = 0; j < ndata; ++j) {
+            const bst_uint ridx = col[j].index;
+            const int nid = DecodePosition(ridx);  // HINT: remember this mistake, don't trust the name of data
+            const int task_id = inst_task_id_.at(ridx);
+            if (inst_label.at(ridx)==1){
+              node_task_pos_ratio_.at(nid).at(task_id)+=1;
+              node_pos_ratio_.at(nid)+=1;
+            }
+          }
+      }
+
+      // calculate the pos ratio
+      for (int nid: qexpand){
+        int node_sum = node_inst_num_left_.at(nid)+node_inst_num_right_.at(nid);
+        if (node_sum>0){
+          node_pos_ratio_.at(nid)/=node_sum;
+        }
+        else{
+          node_pos_ratio_.at(nid)=0;
+        }
+        for (int task_id : tasks_list_){
+          int sum = node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id);
+          float tmp_posnum=node_task_pos_ratio_.at(nid).at(task_id);
+          node_task_pos_ratio_.at(nid).at(task_id) = ( tmp_posnum + param_.baseline_alpha * node_pos_ratio_.at(nid) )/( sum + param_.baseline_alpha );
+        }
+      }
+    }
+
 
     inline void FindTaskSplitNode(const std::vector<int> &qexpand,RegTree *tree){
       std::vector<std::vector<float> > * task_gain_;
@@ -1153,6 +1299,7 @@ class ColMaker: public TreeUpdater {
         // TODO:
         case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
         case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        case 9: break;  // when and how , pos ratio 
         // case 1: CLIDumpModel(param); break;`
         // case 2: CLIPredict(param); break;`
         }
@@ -1176,10 +1323,143 @@ class ColMaker: public TreeUpdater {
         task_gain_ = &task_gain_all_;
       }
       // TODO:
+
       switch (param_.how_task_split) {
         case 0: HowTaskSplitHardMargin(task_gain_,qexpand); break;
         case 1: HowTaskSplitOneLevelForward(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
+        case 9: WhenAndHowTaskSplitPosRatio(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
         }
+    }
+    inline void WhenAndHowTaskSplitPosRatio(std::vector<std::vector<float> > * task_gain_,
+                                            const std::vector<int> &qexpand, 
+                                            //const 
+                                            DMatrix& fmat,
+                                            std::vector<bst_uint> feat_set,
+                                            const std::vector<GradientPair>& gpair){
+                                                
+      
+
+      CalPosRatio(qexpand,fmat,feat_set);
+
+      // 2. compare and find the highest task split gain 
+      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
+      int num_node = (*biggest+1);
+
+      
+      std::vector<std::vector<std::pair<int, float> > > node_task_value_map;
+      node_task_value_map.clear();
+      node_task_value_map.resize(num_node);
+      for (int nid : qexpand){
+        for (int task_id : tasks_list_){
+          node_task_value_map.at(nid).push_back(std::make_pair( task_id, node_task_pos_ratio_.at(nid).at(task_id) ) );
+        }
+      // 2.1. sort the tasks in each node
+        std::sort(node_task_value_map.at(nid).begin(), node_task_value_map.at(nid).end() ,cmp);
+      }
+
+      //3 init some vals
+
+      // 3.1 best_task_gain
+      std::vector<float> best_task_gain;
+      const float negative_infinity = -std::numeric_limits<float>::infinity();
+      best_task_gain.resize(num_node,negative_infinity);
+
+      //3.2 best left_tasks & right_tasks for each task node
+      std::vector<std::vector<int> > task_node_left_tasks_best;
+      std::vector<std::vector<int> > task_node_right_tasks_best;
+      task_node_left_tasks_best.resize(num_node);
+      task_node_right_tasks_best.resize(num_node);
+
+      // 3.2 the sum G and H of left and right tasks
+      std::vector<float> G_node_left_;
+      std::vector<float> G_node_right_;
+      std::vector<float> H_node_left_;
+      std::vector<float> H_node_right_;
+
+      G_node_left_.resize(num_node,0);
+      G_node_right_.resize(num_node,0);
+      H_node_left_.resize(num_node,0);
+      H_node_right_.resize(num_node,0);
+
+      for (int nid : qexpand){
+        G_node_right_.at(nid) = G_node_.at(nid);
+        H_node_right_.at(nid) = H_node_.at(nid);
+      }
+
+
+
+      for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ 
+        for (int nid : qexpand){
+          // remove one task from the right child to left.
+          int task_id = node_task_value_map.at(nid).at(split_n).first;
+
+          G_node_left_.at(nid) += (G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+          G_node_right_.at(nid) -= (G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+          H_node_left_.at(nid) += (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+          H_node_right_.at(nid) -= (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+
+          // if the value is the same, we will omit this split point. but we should make sure the sum G and H are correctlly calculated
+          if (split_n>0 && node_task_value_map.at(nid).at(split_n).second == node_task_value_map.at(nid).at(split_n-1).second){
+            continue;
+          }
+
+          float gain_left = Square(G_node_left_.at(nid)) / (H_node_left_.at(nid)+param_.reg_lambda);
+          float gain_right = Square(G_node_right_.at(nid)) / (H_node_right_.at(nid)+param_.reg_lambda);
+          float gain = gain_left+gain_right;
+
+
+          // update the best task split gain and task
+          if ( gain > best_task_gain.at(nid)  ){
+            best_task_gain.at(nid) = gain;
+            
+            task_node_left_tasks_best.at(nid).clear();
+            task_node_right_tasks_best.at(nid).clear();
+
+            for ( int i =0 ; i < task_num_for_OLF ; i++){
+              int task_id = node_task_value_map.at(nid).at(i).first;
+              if (i <= split_n){
+                task_node_left_tasks_best.at(nid).push_back( task_id );
+              }
+              else{
+                task_node_right_tasks_best.at(nid).push_back( task_id );
+              }
+            }
+          }
+        }
+      }
+
+      // 4. calculate the feature split gain
+      for (int nid : qexpand){
+      
+        float G_left=0;
+        float G_right=0;
+        float H_left=0;
+        float H_right=0;
+        for (int task_id: tasks_list_){
+          G_left+= G_task_lnode_.at(nid).at(task_id);
+          G_right+= G_task_rnode_.at(nid).at(task_id);
+          H_left+= H_task_lnode_.at(nid).at(task_id);
+          H_right+= H_task_rnode_.at(nid).at(task_id);
+        }
+
+        float gain_left = Square( G_left ) / ( H_left + param_.reg_lambda );
+        float gain_right = Square( G_right ) / ( H_right + param_.reg_lambda );
+        float feature_gain = gain_left + gain_right;
+        // 5. make the task split node decision 
+        float ran_float = rand()*1.0/(RAND_MAX*1.0);
+
+        if (feature_gain<best_task_gain.at(nid) && ran_float < param_.baseline_lambda){
+          is_task_node_.at(nid)=true;
+          task_node_left_tasks_.at(nid).clear();
+          task_node_right_tasks_.at(nid).clear();
+          for (int task_id : task_node_left_tasks_best.at(nid)){
+            task_node_left_tasks_.at(nid).push_back(task_id);
+          }
+          for (int task_id : task_node_right_tasks_best.at(nid)){
+            task_node_right_tasks_.at(nid).push_back(task_id);
+          }
+        }
+      }
     }
 
     inline void HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,
@@ -1223,10 +1503,12 @@ class ColMaker: public TreeUpdater {
         case 0: node_task_value = & task_w_; break; 
         case 1: node_task_value = & task_gain_self_; break;
         case 2: node_task_value = & task_gain_all_; break;
+        case 3: CalPosRatio(qexpand,fmat,feat_set); node_task_value = & node_task_pos_ratio_; break;
       }
 
       // the <int, float> pair is sorted by the second value. 
       std::vector<std::vector<std::pair<int, float> > > node_task_value_map;
+      node_task_value_map.clear();
       node_task_value_map.resize(num_node);
       for (int nid : task_expand){
         for (int task_id : tasks_list_){
@@ -1358,8 +1640,6 @@ class ColMaker: public TreeUpdater {
 
       dmlc::DataIter<ColBatch> *iter_task = fmat.ColIterator(feat_set);
       const ColBatch &batch = iter_task->Value();
-      ColBatch::Inst col = batch[0];
-      const auto ndata = static_cast<bst_omp_uint>(col.length);
       // 4. find the best split for the child nodes, one task move at each time
       for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       // for (int split_n =0;split_n <task_num_for_OLF;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
@@ -1392,7 +1672,7 @@ class ColMaker: public TreeUpdater {
             // std::cout<<node_task_value_map.at(nid).at(split_n).second<<" value "<<split_n<<" split_n "<<task_id<<" task_id "<<nid<<" nid "<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id))<<"===\n";
           }
           // update the sub-nid for each inst
-          for (int ridx=0;ridx<num_row;ridx++){
+          for (bst_uint ridx=0;ridx<num_row;ridx++){
             int nid=inst_nid_.at(ridx);
             int task_id=inst_task_id_.at(ridx);
             if (is_task_node_.at(nid)){
@@ -1419,7 +1699,7 @@ class ColMaker: public TreeUpdater {
           const MetaInfo& info = fmat.Info();
           // setup position
           const auto ndata = static_cast<bst_omp_uint>(rowset.Size());
-          #pragma omp parallel for schedule(static)
+          #pragma omp parallel for schedule(static)     // FIXME: (OMP) 
           for (bst_omp_uint i = 0; i < ndata; ++i) {
             const bst_uint ridx = rowset[i];
             const int tid = omp_get_thread_num();
@@ -1428,6 +1708,8 @@ class ColMaker: public TreeUpdater {
             if (!sub_node_works.at(nid)) continue;
             task_stemp_[tid][nid].stats.Add(gpair, info, ridx);
           }
+
+
           // sum the per thread statistics together
           for (int nid : sub_qexpand) {
             TStats stats(param_);
@@ -1531,6 +1813,13 @@ class ColMaker: public TreeUpdater {
             float gain = ( (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) * (sub_node_G.at(left_nid)+sub_node_G.at(right_nid)) 
                           / ( sub_node_H.at(left_nid) + sub_node_H.at(right_nid) + param_.reg_lambda  ) );
             gain_nid.at(nid)=left_gain+right_gain-gain;
+
+            /////////////////////////////
+            // int left_nid=GetLeftChildNid(nid);
+            // int right_nid=GetRightChildNid(nid);
+            // if (nid==8)
+            // std::cout<<nid<<" node  "<<left_gain<<"|"<<snode_task_[left_nid].root_gain<<"  8888  "<<right_gain<<"|"<<snode_task_[right_nid].root_gain<<"\n";
+            /////////////////////////////
           }
 
 
@@ -1548,17 +1837,38 @@ class ColMaker: public TreeUpdater {
               // if (nid==77){
               //   std::cout<<snode_task_[left_nid].best.loss_chg<<" "<<snode_task_[right_nid].best.loss_chg<<"  "<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
               // }
+              // pos_num_flag is used to make sure that both the left tasks and right tasks have at least one samples. otherwise the
+              // tasks split might be split all the non-empty tasks to the left and the empty tasks to the right.
+              bool left_pos_num_flag=false;
+              bool right_pos_num_flag=false;
+              
+
 
               if (cur_OLF_gain>best_OLF_gain.at(nid)){
-                best_OLF_gain.at(nid) = cur_OLF_gain;
-                task_node_left_tasks_best.at(nid).clear();
-                task_node_right_tasks_best.at(nid).clear();
                 for (int task_id : tasks_list_){
                   if (sub_nid_of_task.at(nid).at(task_id) == left_nid){
-                    task_node_left_tasks_best.at(nid).push_back(task_id);
+                    if ( (node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id)) >0 ){
+                      left_pos_num_flag=true;
+                    }
                   }
                   else{
-                    task_node_right_tasks_best.at(nid).push_back(task_id);
+                    if ( (node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id)) >0 ){
+                      right_pos_num_flag=true;
+                    }
+                  }
+                }
+
+                if (left_pos_num_flag && right_pos_num_flag){
+                  best_OLF_gain.at(nid) = cur_OLF_gain;
+                  task_node_left_tasks_best.at(nid).clear();
+                  task_node_right_tasks_best.at(nid).clear();
+                  for (int task_id : tasks_list_){
+                    if (sub_nid_of_task.at(nid).at(task_id) == left_nid){
+                      task_node_left_tasks_best.at(nid).push_back(task_id);
+                    }
+                    else{
+                      task_node_right_tasks_best.at(nid).push_back(task_id);
+                    }
                   }
                 }
                 // if (nid==77){
@@ -1567,9 +1877,15 @@ class ColMaker: public TreeUpdater {
                 // }
 
               }
-              // std::cout<<gain_nid.at(nid)<<"\n";
-              // // std::cout<<snode_task_[left_nid].best.loss_chg+snode_task_[right_nid].best.loss_chg<<"\n";
-              // std::cout<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+              // if (param_.debug == 1){
+
+              //   if (nid==param_.nid_debug){
+                  
+              //     std::cout<<gain_nid.at(nid)<<"\t"<<snode_task_[left_nid].best.loss_chg<<"\t"<<snode_task_[right_nid].best.loss_chg<<"\n";
+              //     // std::cout<<snode_task_[left_nid].best.loss_chg+snode_task_[right_nid].best.loss_chg<<"\n";
+              //     std::cout<<cur_OLF_gain<<"\t"<<best_OLF_gain.at(nid)<<"\n";
+              //   }
+              // }
 
             }
           }
@@ -1593,16 +1909,39 @@ class ColMaker: public TreeUpdater {
         for (int task_id : task_node_right_tasks_best.at(nid)){
           task_node_right_tasks_.at(nid).push_back(task_id);
         }
-        // if (task_node_left_tasks_.at(nid).size()==0){
-        //   for (int ii =0; ii<21; ++ii){
-        //         int task_id = node_task_value_map.at(nid).at(ii).first;
-        //   std::cout<<node_task_value_map.at(nid).at(ii).first<<"\t"<<node_task_value_map.at(nid).at(ii).second<<"\t"<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<<"\n";
-         
+
+        // if (param_.debug == 1){
+        //   if (nid==param_.nid_debug){
+        //     for (int ii =0; ii<21; ++ii){
+        //           int task_id = node_task_value_map.at(nid).at(ii).first;
+
+        //     std::cout<<node_task_value_map.at(nid).at(ii).first<<"\t"<<
+        //               node_task_value_map.at(nid).at(ii).second<<"\t"<<
+        //               (node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<<"\t"<<
+        //               G_task_rnode_.at(nid).at(task_id)+G_task_lnode_.at(nid).at(task_id)<<"\t"<<
+        //               H_task_rnode_.at(nid).at(task_id)+H_task_lnode_.at(nid).at(task_id)<<"\n";
+        //   // float task_w_.at(nid).at(task_id)= -G_task_rnode_.at(nid).at(task_id) / (H_task_rnode_.at(nid).at(task_id) +param_.reg_lambda)
+        //     }
+        //     std::cout<<nid<<"sdfg\n";
+        //   std::cout<<task_node_left_tasks_.at(nid).size()<<" "<<task_node_right_tasks_.at(nid).size()<<"\n";
+          
         //   }
-        //   std::cout<<nid<<"sdfg\n";
-        // std::cout<<task_node_left_tasks_.at(nid).size()<<" "<<task_node_right_tasks_.at(nid).size()<<"\n";
-        
         // }
+        if (param_.debug == 1){
+          if (nid==param_.nid_debug){
+            for (int task_id : tasks_list_){
+
+
+            std::cout<<task_id<<"\t"<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<<"\t"<<
+                      G_task_rnode_.at(nid).at(task_id)+G_task_lnode_.at(nid).at(task_id)<<"\t"<<
+                      H_task_rnode_.at(nid).at(task_id)+H_task_lnode_.at(nid).at(task_id)<<"\n";
+          // float task_w_.at(nid).at(task_id)= -G_task_rnode_.at(nid).at(task_id) / (H_task_rnode_.at(nid).at(task_id) +param_.reg_lambda)
+            }
+            std::cout<<nid<<"sdfg\n";
+          std::cout<<task_node_left_tasks_.at(nid).size()<<" "<<task_node_right_tasks_.at(nid).size()<<"\n";
+          
+          }
+        }
       }
 
     }
@@ -1692,7 +2031,12 @@ class ColMaker: public TreeUpdater {
       auto num_row=p_fmat->Info().num_row_;
       auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
       int num_node = (*biggest+1);
-      // std::cout<<num_node<<"\n";
+      // if (param_.debug==1){
+      //   for (int nid: qexpand){
+      //     std::cout<<"~~~"<<nid<<"~~~\n";
+      //   }
+      //   std::cout<<"\n****"<<num_node<<"****\n";
+      // }
 
       InitAuxiliary(num_row,num_node,qexpand);
       // std::cout<<"init aux"<<'\n';
@@ -1738,6 +2082,29 @@ class ColMaker: public TreeUpdater {
           break;
         }
       }
+
+      if (param_.how_task_split==9){
+          ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);        
+      }
+
+      if (param_.debug == 1){
+        for (int nid : qexpand){
+
+          if (nid==param_.nid_debug){
+            for (int task_id : tasks_list_){
+
+
+            std::cout<<task_id<<"\t"<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id) )<<"\t"<<
+                      G_task_rnode_.at(nid).at(task_id)+G_task_lnode_.at(nid).at(task_id)<<"\t"<<
+                      H_task_rnode_.at(nid).at(task_id)+H_task_lnode_.at(nid).at(task_id)<<"\n";
+          // float task_w_.at(nid).at(task_id)= -G_task_rnode_.at(nid).at(task_id) / (H_task_rnode_.at(nid).at(task_id) +param_.reg_lambda)
+            }
+            std::cout<<nid<<"sdfg\n";
+          std::cout<<task_node_left_tasks_.at(nid).size()<<" "<<task_node_right_tasks_.at(nid).size()<<"\n";
+          
+          }
+        }
+      }
       
 
       // if (param_.task_split_flag==1){
@@ -1781,8 +2148,8 @@ class ColMaker: public TreeUpdater {
                                     task_node_left_tasks_.at(nid),
                                     // right_tasks
                                     task_node_right_tasks_.at(nid),
-                                    e.best.DefaultLeft(),
-                                    is_task_node_.at(nid)
+                                    is_task_node_.at(nid),
+                                    e.best.DefaultLeft()
                                     // is_task_split
                                     );
           // }
@@ -2045,6 +2412,8 @@ class ColMaker: public TreeUpdater {
     std::vector<std::vector<int> > node_task_inst_num_right_;
     std::vector<int> node_inst_num_left_;
     std::vector<int> node_inst_num_right_;
+    std::vector<int> node_inst_num_;
+    
 
     /****************************** auxiliary val for 1-4 gain compute***********************************/
     // TODO:
@@ -2065,6 +2434,23 @@ class ColMaker: public TreeUpdater {
 
     //
     int num_node_for_task_;
+
+    /****************************** auxiliary val for baseline***********************************/    
+    // store the pos ratio of each task on each node
+    std::vector<std::vector<float> > node_task_pos_ratio_;
+    
+    // store the pos ratio of each node
+    std::vector<float> node_pos_ratio_;
+
+    // // store the sum_G of left/right tasks 
+    // std::vector<float> G_node_left_;
+    // std::vector<float> G_node_right_;
+    
+    // // store the sum_H of left/right tasks
+    // std::vector<float> H_node_left_;
+    // std::vector<float> H_node_right_;
+    
+    
 
     
  

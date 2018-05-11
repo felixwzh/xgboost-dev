@@ -28,8 +28,24 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 
 
 
+  // random seed
+  int baseline_seed;
+
+  // baseline_alpha
+  float baseline_alpha;
+
+  // baseline_lambda
+  float baseline_lambda;
   // // use to indicate whether we will conduct task split or not, if yes, =1
   // int task_split_flag; //FIXME: not work
+
+  int nid_debug;
+
+
+
+
+  // debug
+  int debug;
 
   // this is used to indicate which value is used to perform OLF split;
   int which_task_value;
@@ -110,6 +126,30 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   int n_gpus;
   // declare the parameters
   DMLC_DECLARE_PARAMETER(TrainParam) {
+
+
+    DMLC_DECLARE_FIELD(baseline_seed)
+        .set_default(0)
+        .describe("baseline_seed.");
+
+    DMLC_DECLARE_FIELD(baseline_lambda)
+        .set_default(0.2)
+        .describe("baseline_lambda");
+    
+
+    DMLC_DECLARE_FIELD(debug)
+        .set_default(0)
+        .describe("debug.");
+
+    DMLC_DECLARE_FIELD(nid_debug)
+        .set_default(0)
+        .describe("nid_debug");
+
+        
+    DMLC_DECLARE_FIELD(baseline_alpha)
+        .set_default(0.2)
+        .describe("baseline_alpha");
+        
 
     // DMLC_DECLARE_FIELD(task_split_flag)
     //     .set_default(1)

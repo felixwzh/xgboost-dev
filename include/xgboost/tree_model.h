@@ -165,21 +165,28 @@ class TreeModel {
                           TSplitCond split_cond,
                           std::vector<int> left_tasks,
                           std::vector<int> right_tasks,
-                          bool default_left = false,
-                          bool is_task_split = false) { 
-      if (!is_task_split) {
-        if (default_left) split_index |= (1U << 31);
-        this->sindex_ = split_index;
-        (this->info_).split_cond = split_cond;
-      }
-      else {
+                          bool is_task_node,
+                          bool default_left = false
+                          ) { 
+      if (is_task_node) {
         // if (default_left) split_index |= (1U << 31);
-        this->sindex_ = 0;
+        this->sindex_ = -9; //FIXME: 
         (this->info_).split_cond = split_cond;
         // this->sindex_ = split_index; // FIXME: not sure here, is this usefull?
         this->is_task_node = is_task_node;
+        // std::cout<<"ooooooooooooooooooooooooooo"<<is_task_node;
         this->left_tasks=left_tasks;
-        this->right_tasks=right_tasks;
+        this->right_tasks=right_tasks;        
+      }
+      else {
+
+
+        if (default_left) split_index |= (1U << 31);
+        this->sindex_ = split_index;
+        (this->info_).split_cond = split_cond;
+        this->is_task_node = is_task_node;
+        // std::cout<<"!!!!!!!!!!!!!!!!!!!!!!";
+
       }
     }
 
@@ -652,6 +659,7 @@ inline int RegTree::GetLeafIndex(const RegTree::FVec& feat, unsigned root_id) co
   auto pid = static_cast<int>(root_id);
   while (!(*this)[pid].IsLeaf()) {
     if (!(*this)[pid].IsTaskNode()){
+      // std::cout<<pid<<"\t";
       unsigned split_index = (*this)[pid].SplitIndex();
       pid = this->GetNext(pid, feat.Fvalue(split_index), feat.IsMissing(split_index));
     }
@@ -664,12 +672,14 @@ inline int RegTree::GetLeafIndex(const RegTree::FVec& feat, unsigned root_id) co
       // search whether it is in the left tasks or not 
       std::vector<int>::iterator ret = std::find(left_tasks.begin(), left_tasks.end(), task_value);
       if (ret!=left_tasks.end()){
+        // std::cout<<pid<<"L\t";
         pid = (*this)[pid].LeftChild();
       }
       else {
         // search whether it is in the right tasks or not 
         std::vector<int>::iterator ret = std::find(right_tasks.begin(), right_tasks.end(), task_value);
         if (ret!=right_tasks.end()){
+        // std::cout<<pid<<"R\t";
           pid = (*this)[pid].RightChild();
         }
         else{
@@ -679,6 +689,7 @@ inline int RegTree::GetLeafIndex(const RegTree::FVec& feat, unsigned root_id) co
     }
     
   }
+  // std::cout<<pid<<"|\n";
   return pid;
 }
 
