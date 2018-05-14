@@ -19,20 +19,25 @@
  * -----13.-compare the loss, but not the AUC. in the result
  * -----5.-add a fucntion to do w* split with 1-4 task split comparing
  * -----15.-set bash param for py training
- * 12. tune the parameter on validation set, instead of test set.
- * 
- * 8.  use the positive ratio as a split metric, baseline model
- * 
+ * -----12.-tune the parameter on validation set, instead of test set.
+ * -----8. -use the positive ratio as a split metric, baseline model
+ * -----16.-the OLF loss might be wrong, review it
+ * -----18. check whether IsTaskNode() works or not
+ * -----25. for OLF split, add a random version that sort the tasks randomly
  * 14. communicate with guoxin and talk about the kdd baselien model
- * 16. the OLF loss might be wrong, review it
  * 17. add some more when and how split functions
- * 18. check whether IsTaskNode() works or not
  * 19. make sure the task feature are added each time
  * 20. output the results with some fixed beginning
  * 21. check the difference between OFL gain and feature gain
  * 22. consider the last value in OLF split, we should omit the tasks with the same task value when propose a possible task split point
- * 
- * 
+ * 23. count the tasks in the leaf, to see what tasks are usually seperated together
+ * 24. combine the baseline and our method together.
+ * 26. make a random versioin baseline. 
+ * 27. consider funciton preserving, like make some reweighting for the task.
+ * 28. train on the full data.
+ * 29. try RL, try RL
+ * 30. count the task number in each node at each level. compare with normal xgboost.
+ *  
  * 
  */
 
@@ -57,6 +62,8 @@
 #include "../common/sync.h"
 #include <iostream>
 #include <random>
+#include <fstream>  
+#include <string>  
 
 namespace xgboost {
 namespace tree {
@@ -144,11 +151,36 @@ class ColMaker: public TreeUpdater {
   class Builder {
    public:
     // constructor
-    explicit Builder(const TrainParam& param) : param_(param), nthread_(omp_get_max_threads()) {}
+    explicit Builder(const TrainParam& param) : param_(param), nthread_(omp_get_max_threads()) {
+      tasks_list_.clear();
+      for (int task_id: param_.tasks_list_){
+        this->tasks_list_.push_back(task_id);
+      }
+      this->task_num_for_init_vec=param_.task_num_for_init_vec;    
+      this->task_num_for_OLF=param_.task_num_for_OLF;
+    }
     // update one tree, growing
     virtual void Update(const std::vector<GradientPair>& gpair,
                         DMatrix* p_fmat,
                         RegTree* p_tree) {
+
+                          if (param_.debug==7){
+                            for (int ii :param_.tasks_list_)
+                            {std::cout<<ii<<"ppp\t";
+                            LOG(INFO) <<"  "<<ii<<"  pppppp";}
+                          }
+      // output one tree ====================================================
+      
+
+      std::ofstream out(param_.output_file,std::ios::app);
+      if (out.is_open()){
+        out<<"\n=============================\n\n";
+      }
+      out.close();  
+
+
+
+
       srand(param_.baseline_seed);
       this->InitData(gpair, *p_fmat, *p_tree);
       this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
@@ -224,6 +256,44 @@ if (param_.debug == 5){
       for (size_t i = 0; i < qexpand_.size(); ++i) {
         const int nid = qexpand_[i];
         (*p_tree)[nid].SetLeaf(snode_[nid].weight * param_.learning_rate);
+        if (param_.leaf_output_flag>0){
+          // AssignTaskAndNid(RegTree *tree,
+          //                       DMatrix *p_fmat,
+          //                       std::vector<bst_uint> feat_set,
+          //                       const std::vector<int> &qexpand,
+          //                       const int num_node_); //TODO: 
+
+          int all_num=0;
+          std::ofstream out(param_.output_file,std::ios::app);
+          auto num_row=p_fmat->Info().num_row_;
+          std::vector<int> task_sample;
+          task_sample.resize(task_num_for_init_vec,0);
+
+          for (uint64_t ridx=0; ridx <num_row;ridx++){
+            if (DecodePosition(ridx)==nid){
+              int task_id = inst_task_id_.at(ridx);
+              task_sample.at(task_id)+=1;
+              all_num+=1;
+            }
+          }
+          
+          if (out.is_open()){
+            out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
+            if (param_.leaf_output_flag==2){
+              for (int task_id :tasks_list_){
+                out<<task_id<<","<<task_sample.at(task_id)<<",";
+              }
+            }
+          }
+          out<<"tasks,";
+          for (int task_id:tasks_list_){
+            if (task_sample.at(task_id)>0){
+              out<<task_id<<",";
+            }
+          }
+          out<<"\n";
+          out.close();
+        }
       }
       // remember auxiliary statistics in the tree node
       for (int nid = 0; nid < p_tree->param.num_nodes; ++nid) {
@@ -239,7 +309,7 @@ if (param_.debug == 5){
           num_task_node_+=1;
         }
       }
-      LOG(INFO) <<"  "<<num_task_node_<<"  task split nodes";
+      LOG(INFO) <<"  "<<num_task_node_<<"  task split nodes, "<<task_node_pruned_num_<< " pruned task nodes";
     }
 
    protected:
@@ -1195,6 +1265,16 @@ if (param_.debug == 5){
       }
       return false;
     }
+    inline bool WhenTaskSplitRandom(){
+      float ran_float = rand()*1.0/(RAND_MAX*1.0);
+      
+      if (ran_float < param_.baseline_lambda){
+        return true;
+      }
+      else{
+        return false;
+      }
+    }
 
     // when the sample ratio of tasks that have negative task gain is larger than max_neg_sample_ratio, we set this node as a task split node
     inline bool WhenTaskSplitNegativeSampleRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
@@ -1218,6 +1298,43 @@ if (param_.debug == 5){
       }
 
       if ( (neg_task_gain_sample_num/sample_num) > max_neg_sample_ratio){
+        return true;
+      }
+      else{
+        return false;
+      }
+    }
+
+    //when the gain ratio of the task with negative task gain (task_gain_all only) is higher that some fixed ratio, we will set this node as a task split node
+    inline bool WhenTaskSplitNegativeGainRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+      
+      float neg_task_gain=0;
+      float gain_all = 0;
+
+      
+      for (int task_id : tasks_list_){
+        float task_gain = task_gain_->at(nid).at(task_id);
+        gain_all +=std::fabs(task_gain);
+
+        if (task_gain<0){
+          neg_task_gain += std::fabs(task_gain);
+        }
+
+        // if (param_.debug==12){
+        //     std::cout<<task_id<<"\t"<<task_gain<<"\t"<<task_gain_->at(nid).at(task_id)<<"\t"<<( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )<<"\n";
+        //   }
+      }
+      if (param_.debug==12){
+            std::cout<<"\n========================================\n"<<neg_task_gain<<"   "<<gain_all<<"   "<<neg_task_gain/gain_all<<"\n";
+          }
+
+      // note that gain_all may be zero, because the tree may automatically split the tasks, and task gain for each task is 0
+      // and we do not want a task split any more if the tree has already done it for us.
+      if (gain_all<1e-6){
+        return false;
+      }
+
+      if ( (neg_task_gain/gain_all) > max_neg_sample_ratio){
         return true;
       }
       else{
@@ -1291,6 +1408,12 @@ if (param_.debug == 5){
       else{
         task_gain_ = &task_gain_all_;
       }
+
+      // fir case 3,  we will only use task_gain_all 
+      if (param_.when_task_split == 3){
+        task_gain_ = &task_gain_all_;
+      }
+
       for (int nid : qexpand){
          // we should set a param here to indicate which function we are using to make a task split decision
 
@@ -1299,6 +1422,9 @@ if (param_.debug == 5){
         // TODO:
         case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
         case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        case 2: is_task_node_.at(nid) = WhenTaskSplitRandom(); break;
+        case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        
         case 9: break;  // when and how , pos ratio 
         // case 1: CLIDumpModel(param); break;`
         // case 2: CLIPredict(param); break;`
@@ -1327,17 +1453,183 @@ if (param_.debug == 5){
       switch (param_.how_task_split) {
         case 0: HowTaskSplitHardMargin(task_gain_,qexpand); break;
         case 1: HowTaskSplitOneLevelForward(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
+        case 8: WhenAndHowTaskSplitRandom(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
         case 9: WhenAndHowTaskSplitPosRatio(task_gain_,qexpand,*p_fmat,feat_set,gpair); break;
         }
     }
-    inline void WhenAndHowTaskSplitPosRatio(std::vector<std::vector<float> > * task_gain_,
-                                            const std::vector<int> &qexpand, 
+
+
+
+    inline void WhenAndHowTaskSplitRandom(std::vector<std::vector<float> > * task_gain_,
+                                            const std::vector<int> &qexpand_p, 
                                             //const 
                                             DMatrix& fmat,
                                             std::vector<bst_uint> feat_set,
                                             const std::vector<GradientPair>& gpair){
+
                                                 
       
+
+      std::vector<int> qexpand;
+      qexpand.clear();
+      for (int nid : qexpand_p){
+        float ran_float = rand()*1.0/(RAND_MAX*1.0);
+        if (param_.debug==10){
+          std::cout<<nid<<"("<<ran_float<<","<<param_.baseline_lambda<<")"<<"\t";
+        }
+        if (ran_float < param_.baseline_lambda){
+          qexpand.push_back(nid);
+        }
+      }
+      if (qexpand.size() == 0) return;
+
+
+      // 2. compare and find the highest task split gain 
+      auto biggest = std::max_element(std::begin(qexpand), std::end(qexpand));  // FIXME: may have problem here.
+      int num_node = (*biggest+1);
+
+      
+      std::vector<std::vector<std::pair<int, float> > > node_task_value_map;
+      node_task_value_map.clear();
+      node_task_value_map.resize(num_node);
+      for (int nid : qexpand){
+        for (int task_id : tasks_list_){
+          node_task_value_map.at(nid).push_back(std::make_pair( task_id, rand()*1.0/(RAND_MAX*1.0) ) );
+        }
+      // 2.1. sort the tasks in each node
+        std::sort(node_task_value_map.at(nid).begin(), node_task_value_map.at(nid).end() ,cmp);
+      }
+
+      //3 init some vals
+
+      // 3.1 best_task_gain
+      std::vector<float> best_task_gain;
+      const float negative_infinity = -std::numeric_limits<float>::infinity();
+      best_task_gain.resize(num_node,negative_infinity);
+
+      //3.2 best left_tasks & right_tasks for each task node
+      std::vector<std::vector<int> > task_node_left_tasks_best;
+      std::vector<std::vector<int> > task_node_right_tasks_best;
+      task_node_left_tasks_best.resize(num_node);
+      task_node_right_tasks_best.resize(num_node);
+
+      // 3.2 the sum G and H of left and right tasks
+      std::vector<float> G_node_left_;
+      std::vector<float> G_node_right_;
+      std::vector<float> H_node_left_;
+      std::vector<float> H_node_right_;
+
+      G_node_left_.resize(num_node,0);
+      G_node_right_.resize(num_node,0);
+      H_node_left_.resize(num_node,0);
+      H_node_right_.resize(num_node,0);
+
+      for (int nid : qexpand){
+        G_node_right_.at(nid) = G_node_.at(nid);
+        H_node_right_.at(nid) = H_node_.at(nid);
+      }
+
+
+
+      for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ 
+        for (int nid : qexpand){
+          // remove one task from the right child to left.
+          int task_id = node_task_value_map.at(nid).at(split_n).first;
+
+          G_node_left_.at(nid) += (G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+          G_node_right_.at(nid) -= (G_task_lnode_.at(nid).at(task_id)+G_task_rnode_.at(nid).at(task_id));
+          H_node_left_.at(nid) += (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+          H_node_right_.at(nid) -= (H_task_lnode_.at(nid).at(task_id)+H_task_rnode_.at(nid).at(task_id));
+
+          // if the value is the same, we will omit this split point. but we should make sure the sum G and H are correctlly calculated
+          if (split_n>0 && node_task_value_map.at(nid).at(split_n).second == node_task_value_map.at(nid).at(split_n-1).second){
+            continue;
+          }
+
+          float gain_left = Square(G_node_left_.at(nid)) / (H_node_left_.at(nid)+param_.reg_lambda);
+          float gain_right = Square(G_node_right_.at(nid)) / (H_node_right_.at(nid)+param_.reg_lambda);
+          float gain = gain_left+gain_right;
+
+
+          // update the best task split gain and task
+          if ( gain > best_task_gain.at(nid)  ){
+            best_task_gain.at(nid) = gain;
+            
+            task_node_left_tasks_best.at(nid).clear();
+            task_node_right_tasks_best.at(nid).clear();
+
+            for ( int i =0 ; i < task_num_for_OLF ; i++){
+              int task_id = node_task_value_map.at(nid).at(i).first;
+              if (i <= split_n){
+                task_node_left_tasks_best.at(nid).push_back( task_id );
+              }
+              else{
+                task_node_right_tasks_best.at(nid).push_back( task_id );
+              }
+            }
+          }
+        }
+      }
+
+      // 4. calculate the feature split gain
+      for (int nid : qexpand){
+      
+        float G_left=0;
+        float G_right=0;
+        float H_left=0;
+        float H_right=0;
+        for (int task_id: tasks_list_){
+          G_left+= G_task_lnode_.at(nid).at(task_id);
+          G_right+= G_task_rnode_.at(nid).at(task_id);
+          H_left+= H_task_lnode_.at(nid).at(task_id);
+          H_right+= H_task_rnode_.at(nid).at(task_id);
+        }
+
+        float gain_left = Square( G_left ) / ( H_left + param_.reg_lambda );
+        float gain_right = Square( G_right ) / ( H_right + param_.reg_lambda );
+        float feature_gain = gain_left + gain_right;
+        // 5. make the task split node decision 
+
+
+        if (feature_gain<best_task_gain.at(nid)){
+          is_task_node_.at(nid)=true;
+          task_node_left_tasks_.at(nid).clear();
+          task_node_right_tasks_.at(nid).clear();
+          for (int task_id : task_node_left_tasks_best.at(nid)){
+            task_node_left_tasks_.at(nid).push_back(task_id);
+          }
+          for (int task_id : task_node_right_tasks_best.at(nid)){
+            task_node_right_tasks_.at(nid).push_back(task_id);
+          }
+        }
+      }
+    }
+
+
+
+
+    inline void WhenAndHowTaskSplitPosRatio(std::vector<std::vector<float> > * task_gain_,
+                                            const std::vector<int> &qexpand_p, 
+                                            //const 
+                                            DMatrix& fmat,
+                                            std::vector<bst_uint> feat_set,
+                                            const std::vector<GradientPair>& gpair){
+
+                                                
+      
+
+      std::vector<int> qexpand;
+      qexpand.clear();
+      for (int nid : qexpand_p){
+        float ran_float = rand()*1.0/(RAND_MAX*1.0);
+        if (param_.debug==10){
+          std::cout<<nid<<"("<<ran_float<<","<<param_.baseline_lambda<<")"<<"\t";
+        }
+        if (ran_float < param_.baseline_lambda){
+          qexpand.push_back(nid);
+        }
+      }
+      if (qexpand.size() == 0) return;
 
       CalPosRatio(qexpand,fmat,feat_set);
 
@@ -1446,9 +1738,9 @@ if (param_.debug == 5){
         float gain_right = Square( G_right ) / ( H_right + param_.reg_lambda );
         float feature_gain = gain_left + gain_right;
         // 5. make the task split node decision 
-        float ran_float = rand()*1.0/(RAND_MAX*1.0);
 
-        if (feature_gain<best_task_gain.at(nid) && ran_float < param_.baseline_lambda){
+
+        if (feature_gain<best_task_gain.at(nid)){
           is_task_node_.at(nid)=true;
           task_node_left_tasks_.at(nid).clear();
           task_node_right_tasks_.at(nid).clear();
@@ -1461,6 +1753,17 @@ if (param_.debug == 5){
         }
       }
     }
+
+    inline void SetRandTaskSplit(const int num_node,const std::vector<int> &qexpand){
+        node_task_random_.clear();
+        node_task_random_.resize(num_node);
+        for (int nid : qexpand){
+          node_task_random_.at(nid).resize(task_num_for_init_vec);
+          for (int task_id : tasks_list_){
+            node_task_random_.at(nid).at(task_id)=rand()*1.0/(RAND_MAX*1.0);
+          }
+        }
+      }
 
     inline void HowTaskSplitOneLevelForward(std::vector<std::vector<float> > * task_gain_,
                                             const std::vector<int> &qexpand, 
@@ -1485,9 +1788,9 @@ if (param_.debug == 5){
         if (is_task_node_.at(nid)){
           task_expand.push_back(nid);
         }
-        // else{
-        //   feature_expand.push_back(nid);
-        // }
+      }
+      if (param_.debug==11){
+        std::cout<<"1! here !\t";
       }
   
 
@@ -1497,13 +1800,24 @@ if (param_.debug == 5){
       num_node_for_task_ = num_node;
       // std::cout<<num_node_for_task_<<"\t";
 
+      // we shoud add a bool vector to indicate whether a nid is in task_expand or not 
+      std::vector<bool> is_task_expand_nid;
+      is_task_expand_nid.resize(num_node,false);
+      for (int nid : task_expand){
+        is_task_expand_nid.at(nid)==true;
+      }
+      
+      
+
       // 1. construc the specific value to make such task split. // should be the value passed to this function
       std::vector<std::vector<float> > * node_task_value;
       switch(param_.which_task_value){
         case 0: node_task_value = & task_w_; break; 
         case 1: node_task_value = & task_gain_self_; break;
         case 2: node_task_value = & task_gain_all_; break;
-        case 3: CalPosRatio(qexpand,fmat,feat_set); node_task_value = & node_task_pos_ratio_; break;
+        case 3: CalPosRatio(task_expand,fmat,feat_set); node_task_value = & node_task_pos_ratio_; break;
+        case 9: SetRandTaskSplit(num_node,task_expand); node_task_value = & node_task_random_; break;
+
       }
 
       // the <int, float> pair is sorted by the second value. 
@@ -1640,9 +1954,20 @@ if (param_.debug == 5){
 
       dmlc::DataIter<ColBatch> *iter_task = fmat.ColIterator(feat_set);
       const ColBatch &batch = iter_task->Value();
+
+
+      if (param_.debug==11){
+        std::cout<<"2! here !\t";
+      }
+
+
       // 4. find the best split for the child nodes, one task move at each time
       for (int split_n =0;split_n <task_num_for_OLF-1;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
       // for (int split_n =0;split_n <task_num_for_OLF;split_n++){ // while there is remaining tasks to be moved from right to left (loop) 
+
+            if (param_.debug==11){
+        std::cout<<"3! here !\t";
+      }
       
           //3.9 a sub nid set 
           std::vector<int> sub_qexpand;
@@ -1671,16 +1996,28 @@ if (param_.debug == 5){
 
             // std::cout<<node_task_value_map.at(nid).at(split_n).second<<" value "<<split_n<<" split_n "<<task_id<<" task_id "<<nid<<" nid "<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id))<<"===\n";
           }
+
+
+                if (param_.debug==11){
+        std::cout<<"4! here !\t";
+      }
           // update the sub-nid for each inst
           for (bst_uint ridx=0;ridx<num_row;ridx++){
             int nid=inst_nid_.at(ridx);
             int task_id=inst_task_id_.at(ridx);
-            if (is_task_node_.at(nid)){
-              // position_task.at(ridx)=sub_nid_of_task.at(nid).at(task_id);  //FIXME: the bug is here. needs fix (20180508)
+            if (is_task_node_.at(nid) && is_task_expand_nid.at(nid)){
+              // position_task.at(ridx)=sub_nid_of_task.at(nid).at(task_id);  
+              //FIXME: the bug is here. needs fix (20180508)
+              // the resson is: a nid mgiht not be a task_qexpand now, but it is still recorded as a task node, so when it comes to that nid, the  sub_nid_of_task.at(nid) 
+              // is not initialized. and that cause the bug. 
               int tmp=sub_nid_of_task.at(nid).at(task_id);
               position_task.at(ridx)= tmp;
             }
           }
+          
+            if (param_.debug==11){
+                  std::cout<<"  5 ! here !\t";
+                }
 
 
           // 4.2 init some vals
@@ -1708,6 +2045,8 @@ if (param_.debug == 5){
             if (!sub_node_works.at(nid)) continue;
             task_stemp_[tid][nid].stats.Add(gpair, info, ridx);
           }
+
+                
 
 
           // sum the per thread statistics together
@@ -2072,6 +2411,27 @@ if (param_.debug == 5){
           }
           if (pos_num_task<2){
             is_task_node_.at(nid)=false;
+            task_node_pruned_num_++;
+
+
+if (param_.debug==13){
+
+            float neg_task_gain=0;
+            float gain_all = 0;
+
+      
+      for (int task_id : tasks_list_){
+        float task_gain = task_gain_all_.at(nid).at(task_id);
+        gain_all +=std::fabs(task_gain);
+
+        if (task_gain<0){
+          neg_task_gain += std::fabs(task_gain);
+        }
+
+        std::cout<<task_id<<"\t"<<task_gain<<"\t"<<task_gain_all_.at(nid).at(task_id)<<"\t"<<( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )<<"\n";
+      }
+        std::cout<<"\n========================================\n"<<neg_task_gain<<"   "<<gain_all<<"   "<<neg_task_gain/gain_all<<"\n";
+}
           }
         }
       }
@@ -2083,7 +2443,8 @@ if (param_.debug == 5){
         }
       }
 
-      if (param_.how_task_split==9){
+
+      if (param_.how_task_split==9 || param_.how_task_split==8 ){
           ConductTaskSplit(qexpand,p_tree,p_fmat,feat_set,gpair);        
       }
 
@@ -2152,21 +2513,6 @@ if (param_.debug == 5){
                                     e.best.DefaultLeft()
                                     // is_task_split
                                     );
-          // }
-          // else {
-          //   (*p_tree)[nid].SetSplitTask(e.best.SplitIndex(), 
-          //                             e.best.split_value,
-          //                             // left_tasks
-          //                             task_node_left_tasks_.at(nid),
-          //                             // right_tasks
-          //                             task_node_right_tasks_.at(nid),
-          //                             e.best.DefaultLeft(),
-          //                             false
-          //                             // is_task_split
-          //                             );
-          // }
-
-
           
           if (!is_task_node_.at(nid)){
             // mark right child as 0, to indicate fresh leaf
@@ -2178,8 +2524,86 @@ if (param_.debug == 5){
             (*p_tree)[(*p_tree)[nid].RightChild()].SetLeaf(0.0f, 0);
           }
           
+          if (param_.leaf_output_flag>0){
+            // we will record the info of the leaf here
+            // we first count the sample num of each task at this nid
+            int all_num=0;
+            std::ofstream out(param_.output_file,std::ios::app);
+            auto num_row=p_fmat->Info().num_row_;
+            std::vector<int> task_sample;
+            task_sample.resize(task_num_for_init_vec,0);
+
+            for (uint64_t ridx=0; ridx <num_row;ridx++){
+              if (inst_nid_.at(ridx)==nid){
+                int task_id = inst_task_id_.at(ridx);
+                task_sample.at(task_id)+=1;
+                all_num+=1;
+              }
+            }
+            
+            if (out.is_open()){
+              if (!is_task_node_.at(nid)){
+                out<<"*,";
+              }
+              else{
+                out<<"^,";
+              }
+              out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
+
+              if (param_.leaf_output_flag==2){
+                for (int task_id :tasks_list_){
+                  out<<task_id<<","<<task_sample.at(task_id)<<",";
+                }
+              }
+            }
+            out<<"tasks,";
+            for (int task_id:tasks_list_){
+              if (task_sample.at(task_id)>0){
+                out<<task_id<<",";
+              }
+            }
+            out<<"\n";
+            out.close();
+
+          }
         } else {
           (*p_tree)[nid].SetLeaf(e.weight * param_.learning_rate);
+          if (param_.leaf_output_flag>0){
+            // we will record the info of the leaf here
+            // we first count the sample num of each task at this nid
+            int all_num=0;
+            std::ofstream out(param_.output_file,std::ios::app);
+            auto num_row=p_fmat->Info().num_row_;
+            std::vector<int> task_sample;
+            task_sample.resize(task_num_for_init_vec,0);
+
+            for (uint64_t ridx=0; ridx <num_row;ridx++){
+              if (inst_nid_.at(ridx)==nid){
+                int task_id = inst_task_id_.at(ridx);
+                task_sample.at(task_id)+=1;
+                all_num+=1;
+              }
+            }
+            
+            if (out.is_open()){
+              out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
+
+              if (param_.leaf_output_flag==2){
+                for (int task_id :tasks_list_){
+                  out<<task_id<<","<<task_sample.at(task_id)<<",";
+                }
+              }
+            }
+            out<<"tasks,";
+            for (int task_id:tasks_list_){
+              if (task_sample.at(task_id)>0){
+                out<<task_id<<",";
+              }
+            }
+            out<<"\n";
+            out.close();
+
+          }
         }
       }
     }
@@ -2310,6 +2734,12 @@ if (param_.debug == 5){
                     this->SetEncodePosition(ridx, tree[nid].RightChild());
                   }
                   else{
+                    for (int id :task_node_left_tasks_.at(nid)){
+                      std::cout<<id<<"l\t";
+                    }
+                    for (int id :task_node_right_tasks_.at(nid)){
+                      std::cout<<id<<"r\t";
+                    }
                     exit(99);                    
                   }
                 }
@@ -2358,13 +2788,14 @@ if (param_.debug == 5){
 
 
     /****************************** auxiliary val ***********************************/
+    std::vector<int> exp_list_;
     // they can be init at the begining of each depth before the real task split
 
     // 
-    const std::vector<int> tasks_list_{1, 2, 4, 5, 6, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
-    const int task_num_for_init_vec=30;
-    const int task_num_for_OLF=21;
-    
+    std::vector<int> tasks_list_{1, 2, 4, 5, 6, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
+    int task_num_for_init_vec=30;    
+    int task_num_for_OLF=21;
+
 
     // the nid of each inst
     std::vector<int> inst_nid_;
@@ -2449,6 +2880,12 @@ if (param_.debug == 5){
     // // store the sum_H of left/right tasks
     // std::vector<float> H_node_left_;
     // std::vector<float> H_node_right_;
+    //
+
+    // to show that the task gain is usefull, we also sort the tasks randomly in OLF
+    std::vector<std::vector<float> > node_task_random_; 
+
+    int task_node_pruned_num_=0;
     
     
 

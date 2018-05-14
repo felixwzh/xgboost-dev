@@ -13,7 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <vector>
-
+#include <string>
 
 namespace xgboost {
 namespace tree {
@@ -26,6 +26,15 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 
 
 
+
+  // flag to indicate which kind of leaf output we will use
+  int leaf_output_flag;
+  // file string
+  std::string output_file;
+
+  std::vector<int> tasks_list_;
+  int task_num_for_init_vec;
+  int task_num_for_OLF;
 
 
   // random seed
@@ -128,12 +137,35 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   DMLC_DECLARE_PARAMETER(TrainParam) {
 
 
+    DMLC_DECLARE_FIELD(leaf_output_flag)
+        .set_default(0)
+        .describe("leaf_output_flag.");
+
+    DMLC_DECLARE_FIELD(output_file)
+        .set_default("./tree-leaf.info")
+        .describe("output_file.");
+
+    DMLC_DECLARE_FIELD(task_num_for_OLF)
+        .set_default(21)
+        .describe("task_num_for_OLF.");
+
+    DMLC_DECLARE_FIELD(task_num_for_init_vec)
+        .set_default(30)
+        .describe("task_num_for_init_vec.");
+
+
+    
+    DMLC_DECLARE_FIELD(tasks_list_)
+        .set_default(std::vector<int>({1, 2, 4, 5, 6, 10, 11, 12, 13, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29}))
+        .describe("tasks_list_");
+
+
     DMLC_DECLARE_FIELD(baseline_seed)
         .set_default(0)
         .describe("baseline_seed.");
 
     DMLC_DECLARE_FIELD(baseline_lambda)
-        .set_default(0.2)
+        .set_default(0.5)
         .describe("baseline_lambda");
     
 
