@@ -24,27 +24,45 @@
  * -----16.-the OLF loss might be wrong, review it
  * -----18. check whether IsTaskNode() works or not
  * -----25. for OLF split, add a random version that sort the tasks randomly
- * 14. communicate with guoxin and talk about the kdd baselien model
- * 17. add some more when and how split functions
- * 19. make sure the task feature are added each time
- * 20. output the results with some fixed beginning
+ * -----17. add some more when and how split functions
+ * -----19. make sure the task feature are added each time
+ * -----20. output the results with some fixed beginning
+ * -----23. count the tasks in the leaf, to see what tasks are usually seperated together
+ * -----26. make a random versioin baseline. 
+ * -----24. combine the baseline and our method together.
+ * -----28. train on the full data.
+ * -----35. when split: 5%, 10%, ..., of the gain. 
+ * -----30. count the task number in each node at each level. compare with normal xgboost.
+ * -----37. check the task split trees, check the results
+ * -----33. make some more metrics to see the behaviour of the whole tree.
+ * 31. compare OLF of the task split and feature split. out put the results. 
  * 21. check the difference between OFL gain and feature gain
  * 22. consider the last value in OLF split, we should omit the tasks with the same task value when propose a possible task split point
- * 23. count the tasks in the leaf, to see what tasks are usually seperated together
- * 24. combine the baseline and our method together.
- * 26. make a random versioin baseline. 
  * 27. consider funciton preserving, like make some reweighting for the task.
- * 28. train on the full data.
+ * 14. communicate with guoxin and talk about the kdd baselien model
  * 29. try RL, try RL
- * 30. count the task number in each node at each level. compare with normal xgboost.
- *  
+ * 32. significance test
+ * 34. use OLF for feature split top k candidates
+ * 36. consider the depth when make the task split 
+ * 38. run those tasks together.
+ * 39. what about missing data issue. 
+ * 40. tune the params when the depth is 4 
+ * try MultiTaskElasticNet and other baseline model
+ * we can try other dataset.
+ * 41. try LR
+ * 42. find other mutli task code
+ *
  * 
  */
 
-/* FIXME: here are some problems tobe solved
+
+
+
+ /*
+  FIXME: here are some problems tobe solved
+ * -----3. the calculation of task gain all is not stable, fix it.
+ * -----2. the w is calculated correctly, needs fix! FIXME:
  * 1. should we calculate task spilt gain in with many other param? like the beta and gamma...
- * 2. the w* is calculated correctly, needs fix! FIXME:
- * 3. the calculation of task gain all is not stable, fix it.
  * 
  *   
  */
@@ -171,12 +189,13 @@ class ColMaker: public TreeUpdater {
                           }
       // output one tree ====================================================
       
-
-      std::ofstream out(param_.output_file,std::ios::app);
-      if (out.is_open()){
-        out<<"\n=============================\n\n";
+      if (param_.leaf_output_flag>0){
+        std::ofstream out(param_.output_file,std::ios::app);
+        if (out.is_open()){
+          out<<"\n=============================\n\n";
+        }
+        out.close();  
       }
-      out.close();  
 
 
 
@@ -185,6 +204,18 @@ class ColMaker: public TreeUpdater {
       this->InitData(gpair, *p_fmat, *p_tree);
       this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
       for (int depth = 0; depth < param_.max_depth; ++depth) {
+      
+      // at print to indicate the layer info
+      if (param_.leaf_output_flag>0){
+        std::ofstream out(param_.output_file,std::ios::app);
+        if (out.is_open()){
+          out<<"depth,"<<depth<<",\n";
+        }
+        out.close();
+      }
+
+
+
         this->FindSplit(depth, qexpand_, gpair, p_fmat, p_tree);
 
 if (param_.debug == 5){
@@ -252,6 +283,17 @@ if (param_.debug == 5){
         // if nothing left to be expand, break
         if (qexpand_.size() == 0) break;
       }
+      // print the last depth
+      if (param_.leaf_output_flag>0){
+        std::ofstream out(param_.output_file,std::ios::app);
+        if (out.is_open()){
+          out<<"depth,"<<param_.max_depth<<",\n";
+        }
+        out.close();
+      }
+
+
+
       // set all the rest expanding nodes to leaf
       for (size_t i = 0; i < qexpand_.size(); ++i) {
         const int nid = qexpand_[i];
@@ -269,6 +311,7 @@ if (param_.debug == 5){
           std::vector<int> task_sample;
           task_sample.resize(task_num_for_init_vec,0);
 
+
           for (uint64_t ridx=0; ridx <num_row;ridx++){
             if (DecodePosition(ridx)==nid){
               int task_id = inst_task_id_.at(ridx);
@@ -278,7 +321,7 @@ if (param_.debug == 5){
           }
           
           if (out.is_open()){
-            out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
+            out<<"l,"<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
             if (param_.leaf_output_flag==2){
               for (int task_id :tasks_list_){
                 out<<task_id<<","<<task_sample.at(task_id)<<",";
@@ -286,11 +329,14 @@ if (param_.debug == 5){
             }
           }
           out<<"tasks,";
+          int sum_pos_nodes=0;
           for (int task_id:tasks_list_){
             if (task_sample.at(task_id)>0){
               out<<task_id<<",";
+              sum_pos_nodes++;
             }
           }
+          out<<"sum,"<<sum_pos_nodes<<",";
           out<<"\n";
           out.close();
         }
@@ -984,15 +1030,25 @@ if (param_.debug == 5){
       // pre-split the data, get the left or right info
       while (iter_task->Next()) {  
         const ColBatch &batch = iter_task->Value();
+        if (param_.debug==15){
+          std::cout<<batch.size<<"\\\\\\\n";
+        }
         for (size_t i = 0; i < batch.size; ++i) {
+
           ColBatch::Inst col = batch[i];
           const bst_uint fid = batch.col_index[i];
           const auto ndata = static_cast<bst_omp_uint>(col.length);
+          if (param_.debug==15){
+          std::cout<<ndata<<"====="<<fid<<"\n";
+          }
           // #pragma omp parallel for schedule(static)   // FIXME: the code here is wrong if we use OMP
           for (bst_omp_uint j = 0; j < ndata; ++j) {
             const bst_uint ridx = col[j].index;
             const int nid = DecodePosition(ridx);  // HINT: remember this mistake, don't trust the name of data
             inst_nid_.at(ridx)=nid;
+            if (param_.debug==13){
+              // std::cout<<nid<<"|"<<ridx<<"|"<<ndata<<"\t";
+            }
             const bst_float fvalue = col[j].fvalue;
             if (nid_split_index.at(nid) == fid) {
               node_inst_num_.at(nid)+=1; 
@@ -1144,6 +1200,9 @@ if (param_.debug == 5){
         int task_id=inst_task_id_.at(ridx);
 
         //calcu G_node and H_node
+        if (param_.debug==13){
+          std::cout<<"!"<<nid<<"|"<<ridx<<"\t";
+        }
         G_node_.at(nid)+=b.GetGrad();
         H_node_.at(nid)+=b.GetHess();
 
@@ -1305,6 +1364,41 @@ if (param_.debug == 5){
       }
     }
 
+    inline bool WhenTaskSplitMeanRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+
+      float mean_task_gain = 0;
+
+      
+      float neg_task_gain_sample_num=0;
+      float sample_num=( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) );
+      float task_gain =0;
+      
+
+      // calculate the mean
+      for (int task_id : tasks_list_){
+
+          task_gain = task_gain_->at(nid).at(task_id);
+          int task_sample_num = node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id);
+          mean_task_gain += (task_sample_num*task_gain);
+      }
+      mean_task_gain/=sample_num;
+
+      for (int task_id : tasks_list_){
+
+          task_gain = task_gain_->at(nid).at(task_id);
+          if (task_gain < (param_.mean_less_ratio*mean_task_gain)){
+            int task_sample_num = node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id);
+            neg_task_gain_sample_num+=task_sample_num;
+          }
+      }
+      if ( (neg_task_gain_sample_num/sample_num) > max_neg_sample_ratio){
+        return true;
+      }
+      else{
+        return false;
+      }
+    }
+
     //when the gain ratio of the task with negative task gain (task_gain_all only) is higher that some fixed ratio, we will set this node as a task split node
     inline bool WhenTaskSplitNegativeGainRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
       
@@ -1424,6 +1518,8 @@ if (param_.debug == 5){
         case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
         case 2: is_task_node_.at(nid) = WhenTaskSplitRandom(); break;
         case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        case 4: is_task_node_.at(nid) = WhenTaskSplitMeanRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+        
         
         case 9: break;  // when and how , pos ratio 
         // case 1: CLIDumpModel(param); break;`
@@ -2543,10 +2639,10 @@ if (param_.debug==13){
             
             if (out.is_open()){
               if (!is_task_node_.at(nid)){
-                out<<"*,";
+                out<<"f,";
               }
               else{
-                out<<"^,";
+                out<<"t,";
               }
               out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
 
@@ -2557,11 +2653,14 @@ if (param_.debug==13){
               }
             }
             out<<"tasks,";
+            int sum_pos_nodes=0;
             for (int task_id:tasks_list_){
               if (task_sample.at(task_id)>0){
                 out<<task_id<<",";
+                sum_pos_nodes++;
               }
             }
+            out<<"sum,"<<sum_pos_nodes<<",";
             out<<"\n";
             out.close();
 
@@ -2586,7 +2685,7 @@ if (param_.debug==13){
             }
             
             if (out.is_open()){
-              out<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
+              out<<"l,"<<nid<<","<<snode_[nid].weight * param_.learning_rate<<","<<all_num<<",";
 
               if (param_.leaf_output_flag==2){
                 for (int task_id :tasks_list_){
@@ -2595,11 +2694,14 @@ if (param_.debug==13){
               }
             }
             out<<"tasks,";
+            int sum_pos_nodes=0;
             for (int task_id:tasks_list_){
               if (task_sample.at(task_id)>0){
                 out<<task_id<<",";
+                sum_pos_nodes++;
               }
             }
+            out<<"sum,"<<sum_pos_nodes<<",";
             out<<"\n";
             out.close();
 

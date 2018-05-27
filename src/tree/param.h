@@ -50,7 +50,8 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 
   int nid_debug;
 
-
+  //  if the task gain is less than a certain ratio of the mean
+  float mean_less_ratio;
 
 
   // debug
@@ -135,6 +136,11 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   int n_gpus;
   // declare the parameters
   DMLC_DECLARE_PARAMETER(TrainParam) {
+
+
+    DMLC_DECLARE_FIELD(mean_less_ratio)
+        .set_default(0)
+        .describe("if the task gain is less than a certain ratio of the mean.");
 
 
     DMLC_DECLARE_FIELD(leaf_output_flag)
