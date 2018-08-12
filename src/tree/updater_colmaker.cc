@@ -5,7 +5,7 @@
  * \author Tianqi Chen
  */
 
-
+  
 /* TODO: here are the feature that should be add in this cpp file
  * -----1.-count and print the task split node num in each tree
  * -----3.-add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
@@ -51,7 +51,7 @@
  * we can try other dataset.
  * 41. try LR
  * 42. find other mutli task code
- *
+ * 43. start working again
  * 
  */
 
@@ -1286,6 +1286,8 @@ if (param_.debug == 5){
             float left_lambda = 0;
             float right_lambda = 0;
             float lambda = 0;
+            float gamma = 0;
+            
           
           if (node_inst_num_left_.at(nid)!=0){
             left_lambda = param_.reg_lambda*(node_task_inst_num_left_.at(nid).at(task_id)/node_inst_num_left_.at(nid));
@@ -1302,15 +1304,18 @@ if (param_.debug == 5){
           if ( ( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) ) != 0 ){
             lambda = param_.reg_lambda*( ( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )
                             / ( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) ) );
+            gamma = param_.min_split_loss*( ( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) )
+                            / ( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) ) );
           }
           else{
             lambda = 0;
+            gamma = 0;
           }
           float gain_left = -(G_task_lnode_.at(nid).at(task_id)*w_L+0.5*(H_task_lnode_.at(nid).at(task_id)+left_lambda)*Square(w_L));
           float gain_right = -(G_task_rnode_.at(nid).at(task_id)*w_R+0.5*(H_task_rnode_.at(nid).at(task_id)+ right_lambda)*Square(w_R));
           float gain = ( (G_task_lnode_.at(nid).at(task_id) + G_task_rnode_.at(nid).at(task_id) ) * w
                        +0.5*( H_task_lnode_.at(nid).at(task_id) + H_task_rnode_.at(nid).at(task_id) + lambda ) * Square(w));
-          task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain;
+          task_gain_all_.at(nid).at(task_id) = gain_left+gain_right+gain-gamma;
         }
       }
     }  // FIXME: the calculation of task gain all is not stable, fix it

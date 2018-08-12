@@ -5,13 +5,13 @@
             "name": "gdb",
             "type": "cppdbg",
             "request": "launch",
-            "program": "/home/fw/code/xgboost/xgboost",
-            "args": ["/home/fw/code/xgboost/demo/ruijin/mushroom.conf"],
+            "program": "${workspaceRoot}/xgboost",
+            "args": ["${workspaceRoot}/demo/binary_classification/mushroom.conf"],
             "stopAtEntry": false,
-            "cwd": "/home/fw/code/xgboost",
+            "cwd": "${workspaceRoot}",
             "environment": [],
             "externalConsole": true,
-            "preLaunchTask": "make",
+            "preLaunchTask": "build",
             "MIMode": "gdb"
         }
     ]

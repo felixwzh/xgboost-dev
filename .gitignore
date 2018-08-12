@@ -107,7 +107,7 @@ cmake/
 
 cub/
 
-demo/
+demo/*
 
 dmlc-core/
 
