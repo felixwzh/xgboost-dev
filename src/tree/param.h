@@ -26,9 +26,19 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 
 
 
+  // used to indicated we only conduct the task split N layers before the last layer
+  // for example, if the max_depth si set to 5, then we have layer 0 for root, and layer 1,2,3,4 for inner nodes
+  // and layer 5 for leaves
+  // if conduct_task_split_N_layer_before=0, then we can conduct task split at layer 0,1,2,3,4
+  // if conduct_task_split_N_layer_before=1, then we can conduct task split at layer 0,1,2,3 but not 4
+  int conduct_task_split_N_layer_before;
 
   // flag to indicate which kind of leaf output we will use
   int leaf_output_flag;
+
+  // flag to indicate whether output the task gain of the each tree.
+  int task_gain_output_flag;
+
   // file string
   std::string output_file;
 
@@ -141,11 +151,19 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
     DMLC_DECLARE_FIELD(mean_less_ratio)
         .set_default(0)
         .describe("if the task gain is less than a certain ratio of the mean.");
-
+    DMLC_DECLARE_FIELD(conduct_task_split_N_layer_before)
+      .set_default(0)
+      .describe("conduct_task_split_N_layer_before.");
+  
 
     DMLC_DECLARE_FIELD(leaf_output_flag)
         .set_default(0)
         .describe("leaf_output_flag.");
+    
+    DMLC_DECLARE_FIELD(task_gain_output_flag)
+        .set_default(0)
+        .describe("task_gain_output_flag.");
+        
 
     DMLC_DECLARE_FIELD(output_file)
         .set_default("./tree-leaf.info")

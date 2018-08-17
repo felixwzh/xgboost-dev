@@ -6,7 +6,7 @@
  */
 
   
-/* TODO: here are the feature that should be add in this cpp file
+/* TODO: here are the feature that should be add in this cpp file 
  * -----1.-count and print the task split node num in each tree
  * -----3.-add a weighted calculation of task split_gain_all, otherwise the gain will be negative even if the task is empty at that node.
  * -----4.-add a function to do task_gain_self split
@@ -35,6 +35,7 @@
  * -----30. count the task number in each node at each level. compare with normal xgboost.
  * -----37. check the task split trees, check the results
  * -----33. make some more metrics to see the behaviour of the whole tree.
+ * -----44. compute the task gain of each task for each tree, and compare it with the normal xgboost. 
  * 31. compare OLF of the task split and feature split. out put the results. 
  * 21. check the difference between OFL gain and feature gain
  * 22. consider the last value in OLF split, we should omit the tasks with the same task value when propose a possible task split point
@@ -52,7 +53,11 @@
  * 41. try LR
  * 42. find other mutli task code
  * 43. start working again
+ * 45. prohibit task split before the last layer.
  * 
+ * 46. count the situations that a child of a task split becomes a non-last layer leaf. -> to support 45
+ * 47. calculate the task_gain_all in the task split, this is related to the decidion making in task split
+ * 48. figure out how to make the task split decision with the task split task gain in 47  
  */
 
 
@@ -181,14 +186,9 @@ class ColMaker: public TreeUpdater {
     virtual void Update(const std::vector<GradientPair>& gpair,
                         DMatrix* p_fmat,
                         RegTree* p_tree) {
+      accumulate_task_gain_.resize(task_num_for_init_vec,0);
 
-                          if (param_.debug==7){
-                            for (int ii :param_.tasks_list_)
-                            {std::cout<<ii<<"ppp\t";
-                            LOG(INFO) <<"  "<<ii<<"  pppppp";}
-                          }
-      // output one tree ====================================================
-      
+
       if (param_.leaf_output_flag>0){
         std::ofstream out(param_.output_file,std::ios::app);
         if (out.is_open()){
@@ -196,15 +196,12 @@ class ColMaker: public TreeUpdater {
         }
         out.close();  
       }
-
-
-
-
       srand(param_.baseline_seed);
       this->InitData(gpair, *p_fmat, *p_tree);
       this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
+
+      // this is the main process of the updating
       for (int depth = 0; depth < param_.max_depth; ++depth) {
-      
       // at print to indicate the layer info
       if (param_.leaf_output_flag>0){
         std::ofstream out(param_.output_file,std::ios::app);
@@ -217,66 +214,6 @@ class ColMaker: public TreeUpdater {
 
 
         this->FindSplit(depth, qexpand_, gpair, p_fmat, p_tree);
-
-if (param_.debug == 5){
-          if (qexpand_.size() == 0) break;
-        for (int nid : qexpand_){
-              std::cout<<"\n"<<nid<<": \t"<<node_inst_num_left_.at(nid)+node_inst_num_right_.at(nid)<<"="<<node_inst_num_.at(nid)<<"\t";
-              int tmp=0;
-          for (int task_id : tasks_list_){
-            if (task_gain_all_.at(nid).at(task_id)!=0){
-              std::cout<<task_id<<"("<<task_gain_all_.at(nid).at(task_id)<<","<<node_task_inst_num_left_.at(nid).at(task_id)<<"+"<<node_task_inst_num_right_.at(nid).at(task_id)<<")\t";
-            }
-            // else{
-            //   std::cout<<task_id<<"("<<(node_task_inst_num_left_.at(nid).at(task_id) + node_task_inst_num_right_.at(nid).at(task_id))<<")\t";
-            // }
-            tmp+=(node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id));
-            
-          }
-          std::cout<<"\t!!"<<tmp;
-
-
-        // std::cout<<nid<<"("<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
-          // if (!(*p_tree)[nid].IsLeaf() ) {
-          //   if (is_task_node_.at(nid)){
-
-          // std::cout<<nid<<"*("<<(*p_tree)[nid].LeftChild()<<","<<(*p_tree)[nid].RightChild()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
-          //   }
-          //   else{
-          // std::cout<<nid<<"("<<(*p_tree)[nid].LeftChild()<<","<<(*p_tree)[nid].RightChild()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
-          //   }
-          
-          // }
-          // else{
-          //   std::cout<<nid<<"("<<(*p_tree)[nid].LeafValue()<<"|"<<(node_inst_num_left_.at(nid) + node_inst_num_right_.at(nid))<<")"<<"\t";
-          // }
-          
-          // if ((*p_tree)[nid].IsTaskNode()) {
-
-          //   if (nid==param_.nid_debug){
-          // if (is_task_node_.at(nid)){
-          //   std::cout<<nid<<"\nLeft:";
-          //   auto ltasks=(*p_tree)[nid].LeftTasks();
-          //   for (int id : ltasks) std::cout<<id<<'|'<<(node_task_inst_num_left_.at(nid).at(id)+node_task_inst_num_right_.at(nid).at(id))<<"\t";
-          //   std::cout<<"\nRight:";
-            
-          //   auto rtasks=(*p_tree)[nid].RightTasks();
-          //   for (int id : rtasks) std::cout<<id<<'|'<<(node_task_inst_num_left_.at(nid).at(id)+node_task_inst_num_right_.at(nid).at(id))<<"\t";
-          //   std::cout<<"\n=========================\n";
-            
-          // }else{
-          //   for (int task_id : tasks_list_){
-          //   std::cout<<task_id<<'|'<<(node_task_inst_num_left_.at(nid).at(task_id)+node_task_inst_num_right_.at(nid).at(task_id))<<"\t";
-             
-          //   } std::cout<<"\n=========================\n";
-          // }
-
-          //   }
-
-        }
-        std::cout<<"\n========================\n";
-}
-
         this->ResetPosition(qexpand_, p_fmat, *p_tree);
         this->UpdateQueueExpand(*p_tree, &qexpand_);
         this->InitNewNode(qexpand_, gpair, *p_fmat, *p_tree);
@@ -356,6 +293,22 @@ if (param_.debug == 5){
         }
       }
       LOG(INFO) <<"  "<<num_task_node_<<"  task split nodes, "<<task_node_pruned_num_<< " pruned task nodes";
+        
+        // this is usded to output the task gain of the whole tree.
+        if (param_.task_gain_output_flag>0){
+          float temp_sum=0;
+          std::ofstream out(param_.output_file,std::ios::app);
+          if (out.is_open()){
+            for(int task_id:tasks_list_){
+              out<<accumulate_task_gain_.at(task_id)<<',';
+              temp_sum+=accumulate_task_gain_.at(task_id);
+            }
+          }
+          out<<temp_sum<<",";
+          out<<"\n";
+          out.close();
+        }
+      
     }
 
    protected:
@@ -674,7 +627,6 @@ if (param_.debug == 5){
   //   sum_grad = a.sum_grad - b.sum_grad;
   //   sum_hess = a.sum_hess - b.sum_hess;
   // }
-
   // in a stats
           if (c.sum_hess >= param_.min_child_weight) {
             bst_float loss_chg;
@@ -1268,6 +1220,15 @@ if (param_.debug == 5){
         }
       }
     }
+
+    // inline void AccumulateTaskGain(const std::vector<int> &qexpand){
+    //   for (int nid: qexpand){
+    //     for (int task_id : tasks_list_){
+    //       accumulate_task_gain_.at(task_id)+=task_gain_all_.at(nid).at(task_id);
+    //     }
+    //   }
+    // }
+
     inline void CalcTaskGainAllLambdaWeighted(const std::vector<int> &qexpand){
       for (int nid : qexpand){
         // cal w_l and w_r
@@ -1498,7 +1459,7 @@ if (param_.debug == 5){
     }
 
 
-    inline void FindTaskSplitNode(const std::vector<int> &qexpand,RegTree *tree){
+    inline void FindTaskSplitNode(const std::vector<int> &qexpand,RegTree *tree, const int depth){
       std::vector<std::vector<float> > * task_gain_;
       // first we need to claim which task gain we are using, task_gain_self_ or task_gain_all_ 
       if (param_.use_task_gain_self==1){
@@ -1513,22 +1474,25 @@ if (param_.debug == 5){
         task_gain_ = &task_gain_all_;
       }
 
-      for (int nid : qexpand){
-         // we should set a param here to indicate which function we are using to make a task split decision
+      if (depth < (param_.max_depth - param_.conduct_task_split_N_layer_before)){
 
-         // 1. when there are some negative task split 
-        switch (param_.when_task_split) {
-        // TODO:
-        case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
-        case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
-        case 2: is_task_node_.at(nid) = WhenTaskSplitRandom(); break;
-        case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
-        case 4: is_task_node_.at(nid) = WhenTaskSplitMeanRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
-        
-        
-        case 9: break;  // when and how , pos ratio 
-        // case 1: CLIDumpModel(param); break;`
-        // case 2: CLIPredict(param); break;`
+        for (int nid : qexpand){
+          // we should set a param here to indicate which function we are using to make a task split decision
+
+          // 1. when there are some negative task split 
+          switch (param_.when_task_split) {
+            // TODO:
+            case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
+            case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+            case 2: is_task_node_.at(nid) = WhenTaskSplitRandom(); break;
+            case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+            case 4: is_task_node_.at(nid) = WhenTaskSplitMeanRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+            
+            
+            case 9: break;  // when and how , pos ratio 
+            // case 1: CLIDumpModel(param); break;`
+            // case 2: CLIPredict(param); break;`
+          }
         }
       }
     }
@@ -2496,9 +2460,13 @@ if (param_.debug == 5){
       // CalcTaskGainAll(qexpand);
       CalcTaskGainAllLambdaWeighted(qexpand);
 
+      // /************* Calculate the task gain of each node ********/
+      // AccumulateTaskGain(qexpand);
+
+
       /******************  make the decision whether make a task split or not   ****************/
       // the results are updated in the is_task_node_
-      FindTaskSplitNode(qexpand,p_tree);
+      FindTaskSplitNode(qexpand,p_tree,depth);
 
 
       // before we conduct the task split things, we should make those node with only one task apart.
@@ -2602,6 +2570,15 @@ if (param_.debug==13){
         NodeEntry &e = snode_[nid];
         // now we know the solution in snode[nid], set split
         if (e.best.loss_chg > kRtEps) {
+
+
+          // we can only accumulate the task gain here, because these are those nodes have child nodes.
+          if (!is_task_node_.at(nid)){
+            for (int task_id : tasks_list_){
+              accumulate_task_gain_.at(task_id)+=task_gain_all_.at(nid).at(task_id);
+            }
+          }
+          
           p_tree->AddChilds(nid);
           // if (param_.task_split_flag==1){
           (*p_tree)[nid].SetSplitTask(e.best.SplitIndex(), 
@@ -2951,6 +2928,13 @@ if (param_.debug==13){
     std::vector<int> node_inst_num_left_;
     std::vector<int> node_inst_num_right_;
     std::vector<int> node_inst_num_;
+
+    // store the accumulate task gain of each task.
+    std::vector<float> accumulate_task_gain_;
+
+
+
+
     
 
     /****************************** auxiliary val for 1-4 gain compute***********************************/

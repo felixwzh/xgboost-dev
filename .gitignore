@@ -135,3 +135,7 @@ tests/
 
 
 
+
+*.info
+
+\.vscode/
