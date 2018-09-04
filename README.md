@@ -1,5 +1,5 @@
 # MT-GBDT
-This is the implementation of paper ``MT-GBDT: Multi-Task Gradient Boosting Decision Tree for diabetes prediction'' based on XGBoost.
+This is the implementation of paper ``MT-GBDT: Multi-Task Gradient Boosting Decision Tree for Diabetes Prediction'' based on [XGBoost](https://github.com/dmlc/xgboost).
 
 install the python package of xgboost.
 ```
