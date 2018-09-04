@@ -902,12 +902,12 @@ inline void RegTree::CalculateContributions(const RegTree::FVec& feat, unsigned 
                                             bst_float *out_contribs,
                                             int condition,
                                             unsigned condition_feature) const {
-  // find the expected value of the tree's predictions
+  // find the expected value of the tree's predictions 
   if (condition == 0) {
     bst_float node_value = this->node_mean_values_[static_cast<int>(root_id)];
     out_contribs[feat.Size()] += node_value;
   }
-
+ 
   // Preallocate space for the unique path data
   const int maxd = this->MaxDepth(root_id) + 2;
   auto *unique_path_data = new PathElement[(maxd * (maxd + 1)) / 2];
@@ -919,7 +919,7 @@ inline void RegTree::CalculateContributions(const RegTree::FVec& feat, unsigned 
 
 /*! \brief get next position of the tree given current pid */
 inline int RegTree::GetNext(int pid, bst_float fvalue, bool is_unknown) const {
-  bst_float split_value = (*this)[pid].SplitCond();
+  bst_float split_value = (*this)[pid].SplitCond(); 
   if (is_unknown) {
     return (*this)[pid].DefaultChild();
   } else {

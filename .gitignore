@@ -97,9 +97,7 @@ plugin/updater_gpu/test/cpp/data
 
 cmake-build-debug/
 
-demo/ruijin/
 
-demo/
 
 build/
 
@@ -107,7 +105,7 @@ cmake/
 
 cub/
 
-demo/*
+
 
 dmlc-core/
 

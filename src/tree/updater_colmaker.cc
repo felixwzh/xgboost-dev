@@ -58,6 +58,9 @@
  * 46. count the situations that a child of a task split becomes a non-last layer leaf. -> to support 45
  * 47. calculate the task_gain_all in the task split, this is related to the decidion making in task split
  * 48. figure out how to make the task split decision with the task split task gain in 47  
+ * 49. count the ratio of negative task gain 
+ * 50. git version control 
+ * 
  */
 
 
@@ -179,13 +182,24 @@ class ColMaker: public TreeUpdater {
       for (int task_id: param_.tasks_list_){
         this->tasks_list_.push_back(task_id);
       }
-      this->task_num_for_init_vec=param_.task_num_for_init_vec;    
+      //this->task_num_for_init_vec=param_.task_num_for_init_vec;    
+      this->task_num_for_init_vec=param_.num_task;    
       this->task_num_for_OLF=param_.task_num_for_OLF;
     }
     // update one tree, growing
     virtual void Update(const std::vector<GradientPair>& gpair,
                         DMatrix* p_fmat,
                         RegTree* p_tree) {
+
+
+      if (param_.xgboost_task_gain_output_flag>0){
+        std::ofstream out(param_.output_file,std::ios::app);
+        if (out.is_open()){
+          out<<"\n";
+        }
+        out.close();
+      }
+
       accumulate_task_gain_.resize(task_num_for_init_vec,0);
 
 
@@ -1301,17 +1315,21 @@ class ColMaker: public TreeUpdater {
       }
     }
 
-    // when the sample ratio of tasks that have negative task gain is larger than max_neg_sample_ratio, we set this node as a task split node
-    inline bool WhenTaskSplitNegativeSampleRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+    // when the sample ratio of tasks that have negative task gain is larger than threshold_ratio_R, we set this node as a task split node
+    inline bool WhenTaskSplitNegativeSampleRatio(std::vector<std::vector<float> > * task_gain_,int nid, float threshold_ratio_R){
       
       float neg_task_gain_sample_num=0;
       float sample_num=( node_inst_num_right_.at(nid) + node_inst_num_left_.at(nid) );
       float task_gain =0;
+      float gain_all_at_node=0;
       
       for (int task_id : tasks_list_){
         // if (nid == param_.nid_debug){
 
           task_gain = task_gain_->at(nid).at(task_id);
+          gain_all_at_node+=task_gain;
+
+
           if (task_gain<0){
             neg_task_gain_sample_num+=( node_task_inst_num_right_.at(nid).at(task_id) + node_task_inst_num_left_.at(nid).at(task_id) );
           }
@@ -1322,15 +1340,44 @@ class ColMaker: public TreeUpdater {
         }
       }
 
-      if ( (neg_task_gain_sample_num/sample_num) > max_neg_sample_ratio){
+      if (param_.xgboost_task_gain_output_flag==1 && gain_all_at_node>0){
+          std::ofstream out(param_.output_file,std::ios::app);
+          if (out.is_open()){
+
+            out<<(neg_task_gain_sample_num/sample_num)<<'-'<<sample_num;
+
+          }
+          out<<",";
+          out.close();
+        }
+
+      if (param_.xgboost_task_gain_output_flag==2 && gain_all_at_node>0){
+          std::ofstream out(param_.output_file,std::ios::app);
+          if (out.is_open()){
+            if ( (neg_task_gain_sample_num/sample_num) <= threshold_ratio_R){
+              out<<(neg_task_gain_sample_num/sample_num);
+             }
+             else{
+               out<<0;
+             }
+
+
+          }
+          out<<",";
+          out.close();
+        }
+
+      if ( (neg_task_gain_sample_num/sample_num) > threshold_ratio_R){
         return true;
       }
       else{
         return false;
       }
+
+
     }
 
-    inline bool WhenTaskSplitMeanRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+    inline bool WhenTaskSplitMeanRatio(std::vector<std::vector<float> > * task_gain_,int nid, float threshold_ratio_R){
 
       float mean_task_gain = 0;
 
@@ -1357,7 +1404,7 @@ class ColMaker: public TreeUpdater {
             neg_task_gain_sample_num+=task_sample_num;
           }
       }
-      if ( (neg_task_gain_sample_num/sample_num) > max_neg_sample_ratio){
+      if ( (neg_task_gain_sample_num/sample_num) > threshold_ratio_R){
         return true;
       }
       else{
@@ -1366,7 +1413,7 @@ class ColMaker: public TreeUpdater {
     }
 
     //when the gain ratio of the task with negative task gain (task_gain_all only) is higher that some fixed ratio, we will set this node as a task split node
-    inline bool WhenTaskSplitNegativeGainRatio(std::vector<std::vector<float> > * task_gain_,int nid, float max_neg_sample_ratio){
+    inline bool WhenTaskSplitNegativeGainRatio(std::vector<std::vector<float> > * task_gain_,int nid, float threshold_ratio_R){
       
       float neg_task_gain=0;
       float gain_all = 0;
@@ -1394,7 +1441,7 @@ class ColMaker: public TreeUpdater {
         return false;
       }
 
-      if ( (neg_task_gain/gain_all) > max_neg_sample_ratio){
+      if ( (neg_task_gain/gain_all) > threshold_ratio_R){
         return true;
       }
       else{
@@ -1483,13 +1530,14 @@ class ColMaker: public TreeUpdater {
           switch (param_.when_task_split) {
             // TODO:
             case 0: is_task_node_.at(nid) = WhenTaskSplitHardMargin(task_gain_,nid,param_.min_task_gain); break;
-            case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+            case 1: is_task_node_.at(nid) = WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.threshold_ratio_R); break;
             case 2: is_task_node_.at(nid) = WhenTaskSplitRandom(); break;
-            case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
-            case 4: is_task_node_.at(nid) = WhenTaskSplitMeanRatio(task_gain_,nid,param_.max_neg_sample_ratio); break;
+            case 3: is_task_node_.at(nid) = WhenTaskSplitNegativeGainRatio(task_gain_,nid,param_.threshold_ratio_R); break;
+            case 4: is_task_node_.at(nid) = WhenTaskSplitMeanRatio(task_gain_,nid,param_.threshold_ratio_R); break;
             
             
             case 9: break;  // when and how , pos ratio 
+            case 10: is_task_node_.at(nid) = false; WhenTaskSplitNegativeSampleRatio(task_gain_,nid,param_.threshold_ratio_R); break;
             // case 1: CLIDumpModel(param); break;`
             // case 2: CLIPredict(param); break;`
           }
@@ -1869,7 +1917,7 @@ class ColMaker: public TreeUpdater {
       std::vector<bool> is_task_expand_nid;
       is_task_expand_nid.resize(num_node,false);
       for (int nid : task_expand){
-        is_task_expand_nid.at(nid)==true;
+        is_task_expand_nid.at(nid)=true;
       }
       
       
@@ -2421,7 +2469,7 @@ class ColMaker: public TreeUpdater {
 
 
       //=====================  begin of task split =======================
-
+ 
       /* 1. calculate task_gain_all, task_gain_self, w*,
         * 2. partition the samples under some rule
         * 3. calculate the gain of left and right child if they conduct a normal feature split
@@ -3156,7 +3204,7 @@ class TreeUpdaterSwitch : public TreeUpdater {
 
     inner_->Init(args);
   }
-
+  
   void Update(HostDeviceVector<GradientPair>* gpair,
               DMatrix* data,
               const std::vector<RegTree*>& trees) override {

@@ -24,7 +24,8 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 // 1. first, we define the param as a data member of this TrainParam class
 // 2. we then set the bounds and default value of this param
 
-
+  
+  int xgboost_task_gain_output_flag;
 
   // used to indicated we only conduct the task split N layers before the last layer
   // for example, if the max_depth si set to 5, then we have layer 0 for root, and layer 1,2,3,4 for inner nodes
@@ -64,6 +65,9 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   float mean_less_ratio;
 
 
+  // number of tasks
+  int num_task;
+
   // debug
   int debug;
 
@@ -71,7 +75,7 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
   int which_task_value;
 
   // the max negative sample ratio to determine when to do task split.
-  float max_neg_sample_ratio;
+  float threshold_ratio_R;
 
   // whether to use task gain self, otherwise, use task gain all.
   int use_task_gain_self;
@@ -163,6 +167,13 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
     DMLC_DECLARE_FIELD(task_gain_output_flag)
         .set_default(0)
         .describe("task_gain_output_flag.");
+
+    DMLC_DECLARE_FIELD(xgboost_task_gain_output_flag)
+        .set_default(0)
+        .describe("xgboost_task_gain_output_flag.");
+
+
+        
         
 
     DMLC_DECLARE_FIELD(output_file)
@@ -176,6 +187,13 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
     DMLC_DECLARE_FIELD(task_num_for_init_vec)
         .set_default(30)
         .describe("task_num_for_init_vec.");
+
+    DMLC_DECLARE_FIELD(num_task)
+        .set_default(30)
+        .describe("number of tasks.");
+
+
+    
 
 
     
@@ -214,9 +232,9 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
         .set_default(0)
         .describe("this is used to indicate which value is used to perform OLF split.");
     
-    DMLC_DECLARE_FIELD(max_neg_sample_ratio)
+    DMLC_DECLARE_FIELD(threshold_ratio_R)
         .set_range(0.0f, 1.0f)
-        .set_default(0.3f)
+        .set_default(0.4f)
         .describe("the max negative sample ratio to determine when to do task split.");
     
     DMLC_DECLARE_FIELD(task_gain_margin)
@@ -228,7 +246,7 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
         .describe("whether to use task gain self, otherwise, use task gain all.");
 
     DMLC_DECLARE_FIELD(when_task_split)
-        .set_default(0)
+        .set_default(1)
         .describe(" which kind of condition we will use to determine when to do task split");
 
     DMLC_DECLARE_FIELD(how_task_split)
@@ -238,7 +256,7 @@ struct TrainParam : public dmlc::Parameter<TrainParam> {
 
     DMLC_DECLARE_FIELD(min_task_gain)
         // .set_upper_bound(0.0f)
-        .set_default(-1.0f)
+        .set_default(-0.0f)
         .describe("the minimal task gain, if any task has a smaller task gain, we will conduct a task split here.");
     DMLC_DECLARE_FIELD(learning_rate)
         .set_lower_bound(0.0f)
